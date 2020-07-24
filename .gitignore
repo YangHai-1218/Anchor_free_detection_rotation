@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 .idea/
 weights/
+training_dir/
