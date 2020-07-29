@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from utils.base_conv import SeparableConvBlock
 from utils.Activation import Swish,MemoryEfficientSwish
+from utils.module_init import focal_loss_init,variance_scaling_
 import math
 
 
@@ -23,11 +24,24 @@ class EfficientDetHead(nn.Module):
         self.regressor = Regressor(self.in_channels,self.num_anchors,self.num_layers,self.with_centerness)
         self.classifier = Classifier(self.in_channels,self.num_anchors,self.num_classes,self.num_layers)
 
-        prior_prob = prior
-        bias_value = -math.log((1 - prior_prob) / prior_prob)
-        torch.nn.init.constant_(self.classifier.header.pointwise_conv.conv.bias,bias_value)
+
+        # initial weights and bias
+        for modules in [self.regressor, self.classifier]:
+            for l in modules.modules():
+                if isinstance(l, nn.Conv2d):
+                    variance_scaling_(l.weight)
+                    if l.bias is not None:
+                        torch.nn.init.constant_(l.bias, 0)
+
+        focal_loss_init(self.classifier.header.pointwise_conv.conv.bias,prior)
         if regression_type == 'POINT':
             torch.nn.init.constant_(self.regressor.header.pointwise_conv.bias,4)
+
+
+        # prior_prob = prior
+        # bias_value = -math.log((1 - prior_prob) / prior_prob)
+        # torch.nn.init.constant_(self.classifier.header.pointwise_conv.conv.bias,bias_value)
+
 
 
     def forward(self, inputs):

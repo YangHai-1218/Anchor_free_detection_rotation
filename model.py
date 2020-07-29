@@ -12,6 +12,8 @@ from postprocess import ATSSPostProcessor
 from backbone.Efficientnet import EfficientnetWithBiFPN
 from Head.EfficientDet_head import EfficientDetHead
 from Head.Atss_head import ATSSHead
+from FPN.FPN import FPN,FPNTopP6P7
+
 
 class Scale(nn.Module):
     def __init__(self, init_value=1.0):
@@ -22,87 +24,6 @@ class Scale(nn.Module):
     def forward(self, input):
         return input * self.scale
 
-
-def init_conv_kaiming(module):
-    if isinstance(module, nn.Conv2d):
-        nn.init.kaiming_uniform_(module.weight, a=1)
-
-        if module.bias is not None:
-            nn.init.constant_(module.bias, 0)
-
-
-def init_conv_std(module, std=0.01):
-    if isinstance(module, nn.Conv2d):
-        nn.init.normal_(module.weight, std=std)
-
-        if module.bias is not None:
-            nn.init.constant_(module.bias, 0)
-
-
-class FPN(nn.Module):
-    def __init__(self, in_channels, out_channel, top_blocks=None):
-        super().__init__()
-
-        self.inner_convs = nn.ModuleList()
-        self.out_convs = nn.ModuleList()
-
-        for i, in_channel in enumerate(in_channels, 1):
-            if in_channel == 0:
-                self.inner_convs.append(None)
-                self.out_convs.append(None)
-
-                continue
-
-            inner_conv = nn.Conv2d(in_channel, out_channel, 1)
-            feat_conv = nn.Conv2d(out_channel, out_channel, 3, padding=1)
-
-            self.inner_convs.append(inner_conv)
-            self.out_convs.append(feat_conv)
-
-        self.apply(init_conv_kaiming)
-
-        self.top_blocks = top_blocks
-
-    def forward(self, inputs):
-        inner = self.inner_convs[-1](inputs[-1])
-        outs = [self.out_convs[-1](inner)]
-
-        for feat, inner_conv, out_conv in zip(
-            inputs[:-1][::-1], self.inner_convs[:-1][::-1], self.out_convs[:-1][::-1]
-        ):
-            if inner_conv is None:
-                continue
-
-            upsample = F.interpolate(inner, scale_factor=2, mode='nearest')
-            inner_feat = inner_conv(feat)
-            inner = inner_feat + upsample
-            outs.insert(0, out_conv(inner))
-
-        if self.top_blocks is not None:
-            top_outs = self.top_blocks(outs[-1], inputs[-1])
-            outs.extend(top_outs)
-
-        return outs
-
-
-class FPNTopP6P7(nn.Module):
-    def __init__(self, in_channel, out_channel, use_p5=True):
-        super().__init__()
-
-        self.p6 = nn.Conv2d(in_channel, out_channel, 3, stride=2, padding=1)
-        self.p7 = nn.Conv2d(out_channel, out_channel, 3, stride=2, padding=1)
-
-        self.apply(init_conv_kaiming)
-
-        self.use_p5 = use_p5
-
-    def forward(self, f5, p5):
-        input = p5 if self.use_p5 else f5
-
-        p6 = self.p6(input)
-        p7 = self.p7(F.relu(p6))
-
-        return p6, p7
 
 
 class BoxCoder(object):
@@ -427,13 +348,13 @@ class ATSS(nn.Module):
     def forward(self, images, targets=None):
 
         features = self.backbone(images.tensors)
-        print('backbone extracted')
-        for feature in features:
-            print(feature.shape)
+        # print('backbone extracted')
+        # for feature in features:
+        #     print(feature.shape)
         features = self.fpn(features)
-        print('fpn extracted')
-        for feature in features:
-            print(feature.shape)
+        # print('fpn extracted')
+        # for feature in features:
+        #     print(feature.shape)
         box_cls, box_regression, centerness = self.head(features)
         anchors = self.anchor_generator(images, features)
  
@@ -458,18 +379,18 @@ class ATSS(nn.Module):
         return boxes, {}
 
 
-class Efficinet_BiFPN_ATSS(nn.Module):
+class Efficientnet_Bifpn_ATSS(nn.Module):
     def __init__(self,config,compound_coef=0,load_backboe_weight=False,weight_path=None):
-        super(Efficinet_BiFPN_ATSS,self).__init__()
+        super(Efficientnet_Bifpn_ATSS,self).__init__()
         self.backbone= EfficientnetWithBiFPN(compound_coef=compound_coef,load_total_weight=load_backboe_weight,
                                                     total_weight_path=weight_path)
-        self.head = ATSSHead(
-            self.backbone.fpn_num_filters[compound_coef], config.n_class,
-            config.n_conv, config.prior, config.regression_type
-        )
-        # self.head = EfficientDetHead(compound_coef=compound_coef,prior=config.prior,num_anchors=1,
-        #                              regression_type=config.regression_type,
-        #                              num_classes=config.n_class,with_centerness=True)
+        # self.head = ATSSHead(
+        #     self.backbone.fpn_num_filters[compound_coef], config.n_class,
+        #     config.n_conv, config.prior, config.regression_type
+        # )
+        self.head = EfficientDetHead(compound_coef=compound_coef,prior=config.prior,num_anchors=1,
+                                     regression_type=config.regression_type,
+                                     num_classes=config.n_class,with_centerness=True)
         box_coder = BoxCoder(config.regression_type, config.anchor_sizes, config.anchor_strides)
         self.loss_evaluator = ATSSLoss(
             config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
@@ -484,9 +405,9 @@ class Efficinet_BiFPN_ATSS(nn.Module):
             config.anchor_sizes, config.anchor_strides
         )
 
-    def forward(self, images, targets=None):
+    def forward(self, images, targets=None,val_withloss=False):
         features = self.backbone(images.tensors)
-        if True:
+        if False:
             for feature in features:
                 print(feature.shape)
 
@@ -496,7 +417,13 @@ class Efficinet_BiFPN_ATSS(nn.Module):
         if self.training:
             return self._forward_train(box_cls, box_regression, centerness, targets, anchors)
         else:
-            return self._forward_test(box_cls, box_regression, centerness, anchors)
+            if val_withloss:
+                _,losses = self._forward_train(box_cls, box_regression, centerness, targets, anchors)
+            boxes,_ = self._forward_test(box_cls, box_regression, centerness, anchors)
+            if val_withloss:
+                return boxes,losses
+            else:
+                return boxes,None
 
     def _forward_train(self, box_cls, box_regression, centerness, targets, anchors):
         loss_box_cls, loss_box_reg, loss_centerness = self.loss_evaluator(

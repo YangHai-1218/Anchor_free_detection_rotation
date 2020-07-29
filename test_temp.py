@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
 from backbone.Efficientnet import EfficientnetWithBiFPN
+from argument import get_args
+from model import Efficientnet_Bifpn_ATSS
 
-
-
-model = EfficientnetWithBiFPN(compound_coef=5,load_total_weight=True,
-                                 total_weight_path='../Yet-Another-EfficientDet-Pytorch/weights/efficientdet-d5.pth')
-breakpoint = 1
+args = get_args()
+model = Efficientnet_Bifpn_ATSS(args,0,load_backboe_weight=False)

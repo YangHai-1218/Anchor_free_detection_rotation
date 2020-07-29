@@ -10,7 +10,7 @@ from .Efficientnet_utils import (
 from utils.Activation import (
     MemoryEfficientSwish,
 )
-from .BiFPN import BiFPN
+from FPN.BiFPN import BiFPN
 import os
 import copy
 
@@ -166,13 +166,19 @@ class EfficientnetWithBiFPN(nn.Module):
 
     def forward(self,inputs):
         _, p3, p4, p5 = self.backbone_net(inputs)
-        if True:
+        if False:
             print(f'p3 shape: {p3.shape}')
             print(f'p4 shape:{p4.shape}')
             print(f'p5 shape:{p5.shape}')
 
         features = (p3,p4,p5)
         (p3,p4,p5,p6,p7) = self.bifpn(features)
+        if False:
+            print(f'p3 shape: {p3.shape}')
+            print(f'p4 shape:{p4.shape}')
+            print(f'p5 shape:{p5.shape}')
+            print(f'p6 shape: {p6.shape}')
+            print(f'p7 shape:{p7.shape}')
         return (p3,p4,p5,p6,p7)
 
     def load_total_weight(self, weight_path):
