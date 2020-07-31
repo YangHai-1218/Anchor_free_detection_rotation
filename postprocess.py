@@ -30,19 +30,26 @@ class ATSSPostProcessor(nn.Module):
 
     def forward_for_single_feature_map(self, box_cls, box_regression, centerness, anchors):
         N, _, H, W = box_cls.shape
-        A = box_regression.size(1) // 4
-        C = box_cls.size(1) // A
+        A = box_regression.size(1) // 4  # num_anchor
+        C = box_cls.size(1) // A    # class_num
 
         # put in the same format as anchors
+        # box_cls (N,anchors_feature_map,class_num)
         box_cls = permute_and_flatten(box_cls, N, A, C, H, W)
         box_cls = box_cls.sigmoid()
 
+        # box_regression (N,anchor_feature_map,4)
         box_regression = permute_and_flatten(box_regression, N, A, 4, H, W)
         box_regression = box_regression.reshape(N, -1, 4)
 
+        # filter some anchors using nms_thresh
+        # candidate_inds (N,anchors_feature_map,class_num)
         candidate_inds = box_cls > self.pre_nms_thresh
+
         pre_nms_top_n = candidate_inds.view(N, -1).sum(1)
+        # pre_nms_top_n (N)
         pre_nms_top_n = pre_nms_top_n.clamp(max=self.pre_nms_top_n)
+
 
         centerness = permute_and_flatten(centerness, N, A, 1, H, W)
         centerness = centerness.reshape(N, -1).sigmoid()
@@ -53,11 +60,19 @@ class ATSSPostProcessor(nn.Module):
         results = []
         for per_box_cls, per_box_regression, per_pre_nms_top_n, per_candidate_inds, per_anchors \
                 in zip(box_cls, box_regression, pre_nms_top_n, candidate_inds, anchors):
+            # per_box_cls: (anchors_feature_map,class_num)
+            # per_box_regression: (anchors_feature_map,4)
+            # per_pre_nms_top_n: shape=(1)
+            # per_candidate_inds: (anchors_feature_map,class_num) True or False,
+            # True means the prediction probability > inference_threshold
 
+            # per_box_cls (n) n is the number of elements > inference_threshold in per_box_cls, the element is the probability
             per_box_cls = per_box_cls[per_candidate_inds]
 
+            #
             per_box_cls, top_k_indices = per_box_cls.topk(per_pre_nms_top_n, sorted=False)
 
+            # per_candidate_inds.nonzero()   (n,2) n is equal to per_box_cls.shape[0]
             per_candidate_nonzeros = per_candidate_inds.nonzero()[top_k_indices, :]
 
             per_box_loc = per_candidate_nonzeros[:, 0]
@@ -78,6 +93,22 @@ class ATSSPostProcessor(nn.Module):
         return results
 
     def forward(self, box_cls, box_regression, centerness, anchors):
+        '''
+        params:
+        box_cls: model classifier output for every feature map,
+                list [p3_predict, p4_predict,p5_predict,p6_predict,p7_predict]
+                pi_predict: tensor (N,num_anchors,H,W)  N is the batchsize
+        box_regression: model regressor output for every feature map
+                list [p3_predict,p4_predict,p5_predict,p6_predict,p7_predict]
+                pi_predict: tensor (N,num_anchors*4,H,W)
+        centerness: model centerness branch ourpur for every feature map
+                list [p3_predict,p4_predict,p5_predict,p6_predict,p7_predict]
+                pi_predict: tensor (N,num_anchors,H,w)
+        acnhors: anchor loaction for every image (in the batchsize) and every feature map
+                list [ima1_anchor,...imageN_anchors]
+                imgi_anchor: list[p3_anchors,p4_anchors,p5_anchors,p6_anchors,p7_anchors]
+                pi_anchors: Boslist object
+        '''
         sampled_boxes = []
         anchors = list(zip(*anchors))
         for _, (o, b, c, a) in enumerate(zip(box_cls, box_regression, centerness, anchors)):

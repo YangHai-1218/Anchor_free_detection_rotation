@@ -418,15 +418,9 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
+        # epoch_loss = train(args, epoch, train_loader, model, optimizer, device, logger=logger)
 
-        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, logger=logger)
-
-        save_checkpoint(model,args,optimizer,epoch)
-        # if get_rank() == 0:
-        #     torch.save(
-        #         {'model': model.module.state_dict(), 'optim': optimizer.state_dict()},
-        #         working_dir + f'/epoch-{epoch + 1}.pt',
-        #     )
+        # save_checkpoint(model,args,optimizer,epoch)
 
         valid(args, epoch, valid_loader, valid_set, model, device, logger=logger)
 
@@ -437,13 +431,9 @@ if __name__ == '__main__':
                 if val_epoch_loss < val_best_loss:
                     val_best_loss = val_epoch_loss
                     val_best_epoch = epoch
+
                 if epoch - val_best_epoch > args.es_patience:
                     print(f'[INFO]Stop training at epoch {epoch}. The lowest validation loss achieved is {val_best_loss}')
-                    # if get_rank() == 0:
-                    #     torch.save(
-                    #         {'model': model.module.state_dict(), 'optim': optimizer.state_dict()},
-                    #         working_dir + f'/epoch-{epoch + 1}.pt',
-                    #     )
                     save_checkpoint(model,args,optimizer,epoch)
 
 

@@ -76,6 +76,8 @@ def get_args():
     args.test_max_size = 1333
     args.pixel_mean = [0.485, 0.456, 0.406]
     args.pixel_std = [0.229, 0.224, 0.225]
+
+    # if you use the efficientdet, you don't have to modify this parameter
     args.size_divisible = 32
 
     adjust_working_dir(args)
@@ -93,6 +95,10 @@ def get_mdoel_type(args):
     model_name = args.backbone_name
     args.backbone_type = model_name.split('-')[0]
     args.backbone_coef = int(model_name.split('-')[-1])
+
+
+
+
 
 
 

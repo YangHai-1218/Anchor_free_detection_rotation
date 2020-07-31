@@ -7,6 +7,7 @@ from boxlist import BoxList
 
 
 def has_only_empty_bbox(annot):
+    # if bbox width and height <=1 , then it is a empty box
     return all(any(o <= 1 for o in obj['bbox'][2:]) for obj in annot)
 
 
@@ -53,15 +54,15 @@ class COCODataset(datasets.CocoDetection):
         self.transformer = transform
 
     def __getitem__(self, index):
-        img, annot = super().__getitem__(index)
+        img, annots = super().__getitem__(index)
 
-        annot = [o for o in annot if o['iscrowd'] == 0]
+        annots = [o for o in annots if o['iscrowd'] == 0]
 
-        boxes = [o['bbox'] for o in annot]
+        boxes = [o['bbox'] for o in annots]
         boxes = torch.as_tensor(boxes).reshape(-1, 4)
         target = BoxList(boxes, img.size, mode='xywh').convert('xyxy')
 
-        classes = [o['category_id'] for o in annot]
+        classes = [o['category_id'] for o in annots]
         classes = [self.category2id[c] for c in classes]
         classes = torch.tensor(classes)
         # target.fields['labels'] = classes
