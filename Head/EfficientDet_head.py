@@ -71,12 +71,13 @@ class Regressor(nn.Module):
         if self.with_centerness:
             self.header_centerness = SeparableConvBlock(in_channels, num_anchors * 1, norm=False, activation=False)
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+        self.scales = nn.ModuleList([Scale(init_value=1.0) for _ in range(5)])
 
     def forward(self, inputs):
         feats = []
         if self.with_centerness:
             feats_centerness = []
-        for feat, bn_list in zip(inputs, self.bn_list):
+        for feat, bn_list, scale in zip(inputs, self.bn_list,self.scales):
             for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
                 feat = conv(feat)
                 feat = bn(feat)
@@ -87,6 +88,7 @@ class Regressor(nn.Module):
                 feats_centerness.append(feat_centerness)
 
             feat = self.header(feat)
+            feat = scale(feat)
 
             feats.append(feat)
 
@@ -123,3 +125,13 @@ class Classifier(nn.Module):
             feats.append(feat)
 
         return feats
+
+
+class Scale(nn.Module):
+    def __init__(self, init_value=1.0):
+        super().__init__()
+
+        self.scale = nn.Parameter(torch.tensor([init_value], dtype=torch.float32))
+
+    def forward(self, input):
+        return input * self.scale
