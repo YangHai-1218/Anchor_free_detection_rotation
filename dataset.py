@@ -65,7 +65,7 @@ class COCODataset(datasets.CocoDetection):
 
         boxes = [o['bbox'] for o in annots]
         boxes = torch.as_tensor(boxes).reshape(-1, 4)
-        target = BoxList(boxes, (height,width), mode='xywh').convert('xyxy')
+        target = BoxList(boxes, (width,height), mode='xywh').convert('xyxy')
 
         classes = [o['category_id'] for o in annots]
         classes = [self.category2id[c] for c in classes]

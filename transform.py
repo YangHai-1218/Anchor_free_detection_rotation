@@ -9,6 +9,13 @@ import cv2
 import copy
 import math
 from boxlist import BoxList
+
+"""
+Note that: this data augemntation pipeline is based on opencv, 
+so if you want to use the following methods, 
+make sure the input data is np.ndarray, and BGR format
+"""
+
 class Compose:
     def __init__(self, transforms):
         self.transforms = transforms
@@ -97,8 +104,10 @@ class Resize_For_Efficientnet:
         new_image[:,:,2] = self.color[2]
         new_image[0:resized_height, 0:resized_width] = resized_image
 
-        target_resized = target.resize((resized_height, resized_width))
-        return new_image,target_resized
+        resized_target = target.resize((resized_height, resized_width))
+        target = BoxList(resized_target.bbox,image_size=(self.target_size,)*2,mode='xyxy')
+        target._copy_extra_fields(resized_target)
+        return new_image,resized_target
 
 
 class RandomResize:
@@ -146,10 +155,23 @@ class RandomHorizontalFlip:
 
     def __call__(self, img, target):
         if random.random() < self.p:
-            img = F.hflip(img)
+            img = np.fliplr(img)
+            img = np.ascontiguousarray(img)
             target = target.transpose(0)
 
         return img, target
+
+class RandomVerticalFlip:
+    def __init__(self,p=0.5):
+        self.p = p
+
+    def __call__(self, img,target):
+        if random.random()<self.p:
+            img = np.flipud(img)
+            img = np.ascontiguousarray(img)
+            target = target.transpose(1)
+        return img,target
+
 
 class ToTensor:
     def __call__(self, img, target):
@@ -279,7 +301,19 @@ class RandomAffine:
 
         return img,target_new
 
+class MixUp:
+    
 
+
+
+class CutOut:
+    '''https://arxiv.org/abs/1708.04552
+    https://github.com/hysts/pytorch_cutout/blob/master/dataloader.py '''
+
+    def __init__(self):
+
+
+    def __call__(self,img,target):
 def test():
     from dataset import COCODataset
     from coco_meta import CLASS_NAME
@@ -289,27 +323,32 @@ def test():
 
     def plot_targets(image,targets):
         for target,label in zip(targets.bbox,targets.get_field('labels')):
-            cv2.rectangle(image, (int(target[0]),int(target[1])), (int(target[2]),int(target[3])), (0, 255, 0),2 )
+            cv2.rectangle(image, (int(target[0]),int(target[1])), (int(target[2]),int(target[3])), (0, 255, 0), 2)
             cv2.putText(image,CLASS_NAME[int(label.item())],(int(target[0]),int(target[1])),
                         cv2.FONT_HERSHEY_SIMPLEX,1,(255, 255, 255), 2)
         return image
     for i in range(0,100):
-        img_origin, targets, _ = dataset[i]
+        img_origin, targets_origin, _ = dataset[i]
 
 
         # randomhsv = RandomHSV(0.5,0.5,0.5)
         # img,_ = randomhsv(img_origin,targets)
         # randomaffine = RandomAffine(degrees=1.98,translate=0.05 * 0,scale=0.8,shear=0.641 * 0)
         # img,targets_new = randomaffine(img_origin,targets)
-        resize = Resize_For_Efficientnet(2)
-        img,targets_new = resize(img_origin,targets)
+        # resize = Resize_For_Efficientnet(2)
+        # img,targets_new = resize(img_origin,targets)
+        # flip = RandomHorizontalFlip()
+        # img,targets_new = flip(img_origin,targets)
+        flip = RandomVerticalFlip()
+        img_new,targets_new = flip(img_origin,targets_origin)
 
-        img_origin = plot_targets(img_origin, targets)
+
+        img_origin = plot_targets(img_origin, targets_origin)
 
         cv2.imshow('image_origin', img_origin)
         cv2.waitKey()
 
-        img = plot_targets(img,targets_new)
+        img = plot_targets(img_new,targets_new)
         #img_combine = np.hstack((img,img_origin))
 
 
