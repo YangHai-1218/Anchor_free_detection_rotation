@@ -8,7 +8,7 @@ from tqdm import tqdm
 from argument import get_args
 from backbone import vovnet39, resnet18, resnet50
 from dataset import COCODataset, collate_fn
-from model import ATSS
+from model import ATSS,Efficientnet_Bifpn_ATSS
 import transform
 from evaluate import evaluate
 from distributed import (
@@ -75,10 +75,17 @@ if __name__ == '__main__':
 
     device = 'cuda'
 
+    # valid_trans = transform.Compose(
+    #     [
+    #         transform.Resize(args.test_min_size, args.test_max_size),
+    #         transform.ToTensor(),
+    #         transform.Normalize(args.pixel_mean, args.pixel_std)
+    #     ]
+    # )
     valid_trans = transform.Compose(
         [
-            transform.Resize(args.test_min_size, args.test_max_size),
-            transform.ToTensor(), 
+            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
+            transform.ToTensor(),
             transform.Normalize(args.pixel_mean, args.pixel_std)
         ]
     )
@@ -89,9 +96,10 @@ if __name__ == '__main__':
     # backbone = resnet18(pretrained=False)
     backbone = resnet50(pretrained=False)
     model = ATSS(args, backbone)
+    model = Efficientnet_Bifpn_ATSS(args, compound_coef=args.backbone_coef, load_backboe_weight=False)
 
     # load weight
-    model_file = "./training_dir/epoch-12.pt"
+    model_file = args.weight_path
     chkpt = torch.load(model_file, map_location='cpu')  # load checkpoint
     model.load_state_dict(chkpt['model'])
     print('load weights from ' + model_file)

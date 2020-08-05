@@ -179,7 +179,7 @@ def train(args, epoch, loader, model, optimizer, device, logger=None):
             )
 
             # writing log to tensorboard
-            if logger and idx % 10 == 0:
+            if logger and idx % 50 == 0:
                 lr_rate = optimizer.param_groups[0]['lr']
                 totalStep = (epoch * len(loader) + idx) * args.batch * args.n_gpu
                 logger.add_scalar('training/loss_cls', loss_cls, totalStep)
@@ -349,15 +349,18 @@ if __name__ == '__main__':
     if not args.head_only and args.finetune:
         # if not freeze the backbone, then finetune the backbone,
         optimizer = optim.SGD(
-            model.backbone.parameters(),
-            lr = args.lr*0.1,
+            model.backbone.backbone_net.parameters(),
+            lr = args.lr*args.lr_gamma_Efficientnet,
             momentum = 0.9,
             weight_decay = 0.0001,
             nesterov = True,
         )
+        optimizer.add_param_group({'params':list(model.backbone.bifpn.parameters()),'lr':args.lr*args.lr_gamma_BiFPN,
+                                   'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
         optimizer.add_param_group({'params':list(model.head.parameters()),'lr':args.lr,'momentum':0.9,'weight_decay':0.0001,
                                    'nesterov':True})
-        print(f'[INFO] backbone use the lr :{args.lr*0.1} to finetune')
+        print(f'[INFO] efficientnet use the lr :{args.lr*args.lr_gamma_Efficientnet} to finetune,'
+              f' bifpn use the lr:{args.lr*args.lr_gamma_BiFPN} to finetune')
     else:
         optimizer = optim.SGD(
             model.parameters(),
@@ -407,6 +410,7 @@ if __name__ == '__main__':
     )
     print(f'[INFO] Start training: learning rate:{args.lr}, total batchsize:{args.batch*get_world_size()}, '
           f'working dir:{args.working_dir}')
+
     logger.add_text('exp_info',f'learning_rate:{args.lr},total_batchsize:{args.batch*get_world_size()},'
                                f'backbone_name:{args.backbone_name},freeze_backbone:{args.head_only}'
                                f'finetune_backbone:{args.finetune}')
@@ -418,13 +422,13 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        # epoch_loss = train(args, epoch, train_loader, model, optimizer, device, logger=logger)
+        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, logger=logger)
 
-        # save_checkpoint(model,args,optimizer,epoch)
+        save_checkpoint(model,args,optimizer,epoch)
 
         valid(args, epoch, valid_loader, valid_set, model, device, logger=logger)
 
-        if args.val_with_loss and epoch > 1:
+        if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
             val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)
 
             if args.early_stopping :

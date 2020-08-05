@@ -218,6 +218,7 @@ class BoxList(object):
         self.bbox[:, 3].clamp_(min=0, max=self.size[1] - TO_REMOVE)
         if remove_empty:
             box = self.bbox
+            # keep = ((box[:, 3]- box[:,1]) > 2) & ((box[:, 2] - box[:,0])> 2)
             keep = (box[:, 3] > box[:, 1]) & (box[:, 2] > box[:, 0])
             return self[keep]
         return self

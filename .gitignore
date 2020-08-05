@@ -128,5 +128,8 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .idea/
+
+# for me
 weights/
 training_dir/
+test_temp.py

@@ -9,7 +9,7 @@ def get_argparser():
     # according to Yet-another-efficientdet-pytorch, the base lr 1e-4 if for total batchsize 12
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch', type=int, default=2)
-    parser.add_argument('--epoch', type=int, default=24)
+    parser.add_argument('--epoch', type=int, default=36)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--n_save_sample', type=int, default=5)
     parser.add_argument('--ckpt', type=str)
@@ -27,16 +27,19 @@ def get_args():
     args.lr_gamma = 0.1
 
     # backbone name type: 'model_type - coef' ,for examplt:'ResNet-101','Efficientdet-0'
-    args.backbone_name = 'Efficientdet-0'
+    args.backbone_name = 'Efficientdet-2'
     get_mdoel_type(args)
     args.load_pretrained_weight = True
     args.load_checkpoint = False
-    args.weight_path = 'weights/efficientdet-d0.pth'
+    args.weight_path = 'weights/efficientdet-d2.pth'
     args.head_only = False
     args.finetune = True
     args.early_stopping = False
     args.es_patience = 3
     args.val_with_loss = True
+    args.lr_gamma_BiFPN = 0.1
+    args.lr_gamma_Efficientnet=0.01
+
 
     # args.feat_channels = [0, 0, 512, 768, 1024] # for vovnet
     # args.feat_channels = [0, 0, 128, 256, 512] # for resnet18

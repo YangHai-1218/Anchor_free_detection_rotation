@@ -4,6 +4,8 @@ import torch
 from torchvision import datasets
 
 from boxlist import BoxList
+import cv2
+import numpy as np
 
 
 def has_only_empty_bbox(annot):
@@ -56,11 +58,14 @@ class COCODataset(datasets.CocoDetection):
     def __getitem__(self, index):
         img, annots = super().__getitem__(index)
 
+
+        img = cv2.cvtColor(np.asarray(img),cv2.COLOR_RGB2BGR)
+        height,width,_ = img.shape
         annots = [o for o in annots if o['iscrowd'] == 0]
 
         boxes = [o['bbox'] for o in annots]
         boxes = torch.as_tensor(boxes).reshape(-1, 4)
-        target = BoxList(boxes, img.size, mode='xywh').convert('xyxy')
+        target = BoxList(boxes, (height,width), mode='xywh').convert('xyxy')
 
         classes = [o['category_id'] for o in annots]
         classes = [self.category2id[c] for c in classes]
@@ -68,7 +73,7 @@ class COCODataset(datasets.CocoDetection):
         # target.fields['labels'] = classes
         target.add_field('labels', classes)
 
-        target.clip_to_image(remove_empty=True)
+        target = target.clip_to_image(remove_empty=True)
 
         if self.transformer is not None:
             img, target = self.transformer(img, target)

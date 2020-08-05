@@ -34,6 +34,7 @@ class BoxCoder(object):
         self.anchor_strides = anchor_strides
 
     def encode(self, gt_boxes, anchors):
+        # 归一化
         if self.regression_type == 'POINT':
             TO_REMOVE = 1  # TODO remove
             anchors_w = anchors[:, 2] - anchors[:, 0] + TO_REMOVE
