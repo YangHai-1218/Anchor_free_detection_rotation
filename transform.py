@@ -104,10 +104,10 @@ class Resize_For_Efficientnet:
         new_image[:,:,2] = self.color[2]
         new_image[0:resized_height, 0:resized_width] = resized_image
 
-        resized_target = target.resize((resized_height, resized_width))
+        resized_target = target.resize((resized_width, resized_height))
         target = BoxList(resized_target.bbox,image_size=(self.target_size,)*2,mode='xyxy')
         target._copy_extra_fields(resized_target)
-        return new_image,resized_target
+        return new_image,target
 
 
 class RandomResize:
@@ -175,10 +175,11 @@ class RandomVerticalFlip:
 
 class ToTensor:
     def __call__(self, img, target):
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, channel last to channel first
         img = np.ascontiguousarray(img)
         img = torch.from_numpy(img)
-        return img, target
+        return img.float().div(255), target
+
     
 class Normalize:
     def __init__(self, mean, std):
@@ -251,6 +252,7 @@ class RandomAffine:
         a = random.uniform(-self.degrees, self.degrees)
         # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
         s = random.uniform(1 - self.scale, 1 + self.scale)
+        print(s)
         R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
         # Translation
@@ -301,19 +303,6 @@ class RandomAffine:
 
         return img,target_new
 
-class MixUp:
-    
-
-
-
-class CutOut:
-    '''https://arxiv.org/abs/1708.04552
-    https://github.com/hysts/pytorch_cutout/blob/master/dataloader.py '''
-
-    def __init__(self):
-
-
-    def __call__(self,img,target):
 def test():
     from dataset import COCODataset
     from coco_meta import CLASS_NAME
@@ -339,22 +328,35 @@ def test():
         # img,targets_new = resize(img_origin,targets)
         # flip = RandomHorizontalFlip()
         # img,targets_new = flip(img_origin,targets)
-        flip = RandomVerticalFlip()
-        img_new,targets_new = flip(img_origin,targets_origin)
+        # flip = RandomVerticalFlip()
+        # img_new,targets_new = flip(img_origin,targets_origin)
+        transform = Compose(
+            [
+            # RandomHSV(0.1,0.1,0.1),
+            # RandomAffine(degrees= 1.98*0,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
+            #RandomHorizontalFlip(),
+            Resize_For_Efficientnet(compund_coef=2),
+            # ToTensor(),
+            # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
+            ])
 
+        #img_origin = plot_targets(img_origin, targets_origin)
+        img_new, targets_new = transform(img_origin, targets_origin)
 
-        img_origin = plot_targets(img_origin, targets_origin)
-
-        cv2.imshow('image_origin', img_origin)
-        cv2.waitKey()
-
+        # cv2.imshow('image_origin', img_origin)
+        # cv2.waitKey()
         img = plot_targets(img_new,targets_new)
-        #img_combine = np.hstack((img,img_origin))
-
-
-
         cv2.imshow('image', img)
         cv2.waitKey()
+        # #img_combine = np.hstack((img,img_origin))
+        #
+        # from torchvision import transforms
+        #
+        #
+        # print(targets_new)
+        # img_new = transforms.ToPILImage()(img_new).convert('RGB')
+        # img_new.show()
+
 
 
 

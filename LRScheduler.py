@@ -106,6 +106,13 @@ class GluonLRScheduler(_LRScheduler):
 
         return learning_rate
 
+def iter_per_epoch_cal(args,dataset):
+    n_gpu = args.n_gpu
+    batchsize = args.batch*n_gpu
+
+    image_num = len(dataset)
+    iters_per_epoch = int(image_num/batchsize)
+    return iters_per_epoch
 
 
 def test():
@@ -115,26 +122,44 @@ def test():
     from model import Efficientnet_Bifpn_ATSS
     args = get_args()
     model = Efficientnet_Bifpn_ATSS(args,load_backboe_weight=False)
-    optimizer = SGD(model.parameters(),lr=0.1)
-    optimizer.step()
-    niters = int(1000)
-    scheduler = GluonLRScheduler(optimizer,mode='linear',niters=niters,target_lr=0.2)
+    optimizer = SGD(
+        model.backbone.backbone_net.parameters(),
+        lr=1e-4,
+        momentum=0.9,
+        weight_decay=0.0001,
+        nesterov=True,
+    )
+    optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 1e-3,
+                               'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
+
+    niters = int(1200)
+    scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=24,iters_per_epoch=50)
     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10)
-    lrs = []
-    lrs.append(optimizer.param_groups[0]['lr'])
+    lrs_1 = []
+    lrs_2 = []
+    lrs_1.append(optimizer.param_groups[0]['lr'])
+    lrs_2.append(optimizer.param_groups[1]['lr'])
     for i in range(niters):
         optimizer.step()
         scheduler.step()
-        lrs.append(optimizer.param_groups[0]['lr'])
+        lrs_1.append(optimizer.param_groups[0]['lr'])
+        lrs_2.append(optimizer.param_groups[1]['lr'])
 
     from matplotlib import pyplot as plt
     steps = [i for i in range(niters+1)]
     fig = plt.figure()
     fig.tight_layout()
-    ax = fig.add_axes([0.2,0.2,0.5,0.5])
-    line, = ax.plot(steps,lrs)
-    line.set_label('learning rate')
+    ax_1 = fig.add_axes([0.1,0.2,0.35,0.35])
+    ax_2 = fig.add_axes([0.6,0.2,0.35,0.35])
+    line_1, = ax_1.plot(steps,lrs_1)
+    line_2, = ax_2.plot(steps,lrs_2)
+    line_1.set_label('learning rate group_1')
+    line_2.set_label('learning rate group_2')
+    ax_1.legend()
+    ax_2.legend()
     plt.show()
+
+
 
 
 if __name__ =='__main__':

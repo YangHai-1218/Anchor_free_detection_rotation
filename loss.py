@@ -285,6 +285,8 @@ class ATSSLoss(object):
                 expanded_object_sizes_of_interest = torch.cat(expanded_object_sizes_of_interest, dim=0)
                 points = torch.cat(points, dim=0)
 
+
+                # attention: broadcasting
                 xs, ys = points[:, 0], points[:, 1]
                 l = xs[:, None] - bboxes_per_im[:, 0][None]
                 t = ys[:, None] - bboxes_per_im[:, 1][None]
@@ -295,6 +297,7 @@ class ATSSLoss(object):
                 is_in_boxes = reg_targets_per_im.min(dim=2)[0] > 0.01
 
                 max_reg_targets_per_im = reg_targets_per_im.max(dim=2)[0]
+                # attention here
                 is_cared_in_the_level = \
                     (max_reg_targets_per_im >= expanded_object_sizes_of_interest[:, [0]]) & \
                     (max_reg_targets_per_im <= expanded_object_sizes_of_interest[:, [1]])

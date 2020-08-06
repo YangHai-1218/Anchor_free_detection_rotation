@@ -10,6 +10,7 @@ from backbone import vovnet39, vovnet57, resnet18, resnet50, resnet101
 from dataset import COCODataset, collate_fn
 from model import ATSS,Efficientnet_Bifpn_ATSS
 import transform
+from LRScheduler import GluonLRScheduler,iter_per_epoch_cal
 from evaluate import evaluate
 from distributed import (
     get_rank,
@@ -139,7 +140,7 @@ def valid(args, epoch, loader, dataset, model, device, logger=None):
 
     return preds
 
-def train(args, epoch, loader, model, optimizer, device, logger=None):
+def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=None):
     epoch_loss = []
     model.train()
 
@@ -154,6 +155,7 @@ def train(args, epoch, loader, model, optimizer, device, logger=None):
         images = images.to(device)
         targets = [target.to(device) for target in targets]
 
+
         _, loss_dict = model(images, targets=targets)
         loss_cls = loss_dict['loss_cls'].mean()
         loss_box = loss_dict['loss_reg'].mean()
@@ -164,6 +166,10 @@ def train(args, epoch, loader, model, optimizer, device, logger=None):
         loss.backward()
         # nn.utils.clip_grad_norm_(model.parameters(), 10)
         optimizer.step()
+
+        # for iter scheduler
+        if scheduler:
+            scheduler.step()
 
         loss_reduced = reduce_loss_dict(loss_dict)
         loss_cls = loss_reduced['loss_cls'].mean().item()
@@ -246,8 +252,8 @@ if __name__ == '__main__':
     # for efficientdet resize the image
     train_trans = transform.Compose(
         [
-            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
             transform.RandomHorizontalFlip(0.5),
+            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
             transform.ToTensor(),
             transform.Normalize(args.pixel_mean,args.pixel_std),
         ]
@@ -278,6 +284,7 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         collate_fn=collate_fn(args),
     )
+    iter_per_epoch = iter_per_epoch_cal(args, train_set)
 
     if args.val_with_loss:
         valid_loss_set = COCODataset(args.path, 'val_loss', valid_trans)
@@ -383,7 +390,8 @@ if __name__ == '__main__':
     # scheduler = optim.lr_scheduler.MultiStepLR(
     #     optimizer, milestones=args.lr_steps, gamma=args.lr_gamma,last_epoch=last_epoch
     # )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
+    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
+    scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=args.epoch,iters_per_epoch=iter_per_epoch)
 
 
     if args.distributed:
@@ -412,17 +420,20 @@ if __name__ == '__main__':
           f'working dir:{args.working_dir}')
 
     logger.add_text('exp_info',f'learning_rate:{args.lr},total_batchsize:{args.batch*get_world_size()},'
-                               f'backbone_name:{args.backbone_name},freeze_backbone:{args.head_only}'
+                               f'backbone_name:{args.backbone_name},freeze_backbone:{args.head_only},'
                                f'finetune_backbone:{args.finetune}')
+
     if args.finetune:
-        logger.add_text('exp_info',f'fintune lr:{args.lr*0.1}')
+        logger.add_text('exp_info',f'efficientnet lr gamma:{args.lr_gamma_Efficientnet},'
+                                   f'BiFPN lr gamma:{args.lr_gamma_BiFPN}')
 
     val_best_loss = 1e5
     val_best_epoch = 0
+
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, logger=logger)
+        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, scheduler,logger=logger)
 
         save_checkpoint(model,args,optimizer,epoch)
 
@@ -442,10 +453,4 @@ if __name__ == '__main__':
 
 
 
-        scheduler.step(np.mean(epoch_loss))
-
-
-
-
-
-
+        # scheduler.step(np.mean(epoch_loss))

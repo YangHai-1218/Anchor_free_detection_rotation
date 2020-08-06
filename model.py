@@ -215,6 +215,10 @@ class AnchorGenerator(nn.Module):
         boxlist.add_field("visibility", inds_inside)
 
     def forward(self, image_list, feature_maps):
+        '''
+        output: 每张featuremap上的anchor组为boxlist object, 单张image的不同feturemap anchor box (boxlist）组成list
+                多张image 组成 list
+        '''
         grid_sizes = [feature_map.shape[-2:] for feature_map in feature_maps]
         anchors_over_all_feature_maps = self.grid_anchors(grid_sizes)
         anchors = []

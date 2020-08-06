@@ -60,7 +60,8 @@ class COCODataset(datasets.CocoDetection):
 
 
         img = cv2.cvtColor(np.asarray(img),cv2.COLOR_RGB2BGR)
-        height,width,_ = img.shape
+
+        height, width,_ = img.shape
         annots = [o for o in annots if o['iscrowd'] == 0]
 
         boxes = [o['bbox'] for o in annots]
@@ -74,6 +75,7 @@ class COCODataset(datasets.CocoDetection):
         target.add_field('labels', classes)
 
         target = target.clip_to_image(remove_empty=True)
+
 
         if self.transformer is not None:
             img, target = self.transformer(img, target)
