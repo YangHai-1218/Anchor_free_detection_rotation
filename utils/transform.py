@@ -7,7 +7,7 @@ from torchvision.transforms import functional as F
 import cv2
 import copy
 import math
-from .boxlist import BoxList,boxlist_ioa
+from .boxlist import BoxList,boxlist_ioa,cat_boxlist
 
 """
 Note that: this data augemntation pipeline is based on opencv, 
@@ -245,10 +245,79 @@ class Cutout:
 
         return img,target
 
+class Mosaic:
+    """ https://arxiv.org/abs/1905.04899
+    """
+    def __init__(self,image_size,dataset):
+        self.image_size = image_size # width,height
+        self.dataset = dataset
+
+    def __call__(self, img, target):
+        labels4 = []
+        img4 = np.full((self.image_size[1] * 2, self.image_size[0]* 2, img.shape[2]), 114, dtype=np.uint8)
+        xc = int(random.uniform(self.image_size[0] * 0.5, self.image_size[0] * 1.5))
+        yc = int(random.uniform(self.image_size[1] * 0.5, self.image_size[1] * 1.5))
+        other_indices = [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
+
+        for i in range(4):
+
+            if i == 0: # left top
+                h, w, _ = img.shape
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h# xmin, ymin, xmax, ymax (small image)
+                x_left,y_top = x1a,y1a
+            elif i == 1: # right top
+                img,target,_ = self.dataset[other_indices[i-1]]
+                h,w,_ = img.shape
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, self.image_size[0] * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # left bottom
+                img, target,_ = self.dataset[other_indices[i - 1]]
+                h, w, _ = img.shape
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(self.image_size[1] * 2, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, max(xc, w), min(y2a - y1a, h)
+            elif i == 3:  # bottom right
+                img, target , _ = self.dataset[other_indices[i - 1]]
+                h, w, _ = img.shape
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, self.image_size[0] * 2), min(self.image_size[1] * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+                x_right,y_bottom = x2a,y2a
+
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            if len(target) > 0:
+                target.bbox[:,0] = target.bbox[:,0] + padw
+                target.bbox[:,1] = target.bbox[:,1] + padh
+                target.bbox[:,2] = target.bbox[:,2] + padw
+                target.bbox[:,3] = target.bbox[:,3] + padh
+                target.size = self.image_size
+            labels4.append(target)
+
+
+        labels4 = cat_boxlist(labels4)
+        # image_box = [self.image_size[0] // 2, self.image_size[1] // 2,
+        #              self.image_size[0] // 2 + self.image_size[0], self.image_size[1] // 2 + self.image_size[1]]
+        image_box = [x_left,y_top,x_right,y_bottom]
+        labels4 = labels4.crop(image_box)
+        labels4 = labels4.clip_to_image(remove_empty=True)
+        img4 = img4[image_box[1]:image_box[3],image_box[0]:image_box[2],:]
+
+
+        print(img4.shape)
+        print(labels4.size)
+        return img4,labels4
+
+
+
+
+
+
 
 class RandomHSV:
     """
-    from https://github.com/WongKinYiu/PyTorch_YOLOv4/blob/master/utils/datasets.py
+     https://github.com/WongKinYiu/PyTorch_YOLOv4/blob/master/utils/datasets.py
     """
 
     def __init__(self, hgain=0.5, sgain=0.5, vgain=0.5):
@@ -383,13 +452,16 @@ def test():
                 #RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
                 # RandomHorizontalFlip(),
                 #Resize_For_Efficientnet(compund_coef=2),
-                Cutout(0.9),
+                #Cutout(0.9),
+                Mosaic(image_size=(768,768),dataset=dataset),
+                Resize_For_Efficientnet(compund_coef=2),
                 ToTensor(),
                 # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
             ])
 
         # img_origin = plot_targets(img_origin, targets_origin)
         img_new, targets_new = transform(img_origin, targets_origin)
+        print(img_new.size())
 
         # cv2.imshow('image_origin', img_origin)
         # cv2.waitKey()

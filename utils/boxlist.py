@@ -223,6 +223,8 @@ class BoxList(object):
             return self[keep]
         return self
 
+
+
     def area(self):
         box = self.bbox
         if self.mode == "xyxy":
