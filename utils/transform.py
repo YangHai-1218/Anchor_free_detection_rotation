@@ -1,19 +1,10 @@
 import random
 
 import numpy as np
-from PIL import ImageDraw
+from PIL import Image
 import torch
+from torch.nn.functional import pad
 from torchvision.transforms import functional as F
-import cv2
-import copy
-import math
-from .boxlist import BoxList,boxlist_ioa,cat_boxlist
-
-"""
-Note that: this data augemntation pipeline is based on opencv, 
-so if you want to use the following methods, 
-make sure the input data is np.ndarray, and BGR format
-"""
 
 
 class Compose:
@@ -79,37 +70,15 @@ class Resize:
 
 
 class Resize_For_Efficientnet:
-    """ similar letter box resize implement"""
-
-    def __init__(self, compund_coef=0, color=(114, 114, 114)):
-        self.target_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536]
-        self.target_size = self.target_sizes[compund_coef]
-        self.color = color
+    def __init__(self, compund_coef=0):
+        self.input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536]
+        self.input_size = self.input_sizes[compund_coef]
 
     def __call__(self, img, target):
-        # 长边resize到target_size,短边成比例缩放，之后进行pad
-        size = (self.target_size,) * 2
-        height, width, _ = img.shape
-        if height > width:
-            scale = self.target_size / height
-            resized_height = self.target_size
-            resized_width = int(width * scale)
-        else:
-            scale = self.target_size / width
-            resized_height = int(height * scale)
-            resized_width = self.target_size
-
-        resized_image = cv2.resize(img, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
-        new_image = np.zeros((self.target_size, self.target_size, 3), dtype=np.uint8)
-        new_image[:, :, 0] = self.color[0]
-        new_image[:, :, 1] = self.color[1]
-        new_image[:, :, 2] = self.color[2]
-        new_image[0:resized_height, 0:resized_width] = resized_image
-
-        resized_target = target.resize((resized_width, resized_height))
-        target = BoxList(resized_target.bbox, image_size=(self.target_size,) * 2, mode='xyxy')
-        target._copy_extra_fields(resized_target)
-        return new_image, target
+        size = (self.input_size,) * 2
+        img = F.resize(img, size)
+        target = target.resize(img.size)
+        return img, target
 
 
 class RandomResize:
@@ -158,31 +127,15 @@ class RandomHorizontalFlip:
 
     def __call__(self, img, target):
         if random.random() < self.p:
-            img = np.fliplr(img)
-            img = np.ascontiguousarray(img)
+            img = F.hflip(img)
             target = target.transpose(0)
 
         return img, target
 
 
-class RandomVerticalFlip:
-    def __init__(self, p=0.5):
-        self.p = p
-
-    def __call__(self, img, target):
-        if random.random() < self.p:
-            img = np.flipud(img)
-            img = np.ascontiguousarray(img)
-            target = target.transpose(1)
-        return img, target
-
-
 class ToTensor:
     def __call__(self, img, target):
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, channel last to channel first
-        img = np.ascontiguousarray(img)
-        img = torch.from_numpy(img)
-        return img.float().div(255), target
+        return F.to_tensor(img), target
 
 
 class Normalize:
@@ -194,290 +147,3 @@ class Normalize:
         img = F.normalize(img, mean=self.mean, std=self.std)
 
         return img, target
-
-
-class RandomBrightness:
-    def __init__(self, factor):
-        self.factor = factor
-
-    def __call__(self, img, target):
-        factor = random.uniform(-self.factor, self.factor)
-        img = F.adjust_brightness(img, 1 + factor)
-
-        return img, target
-
-class Cutout:
-    """
-    https://arxiv.org/abs/1708.04552
-    """
-    def __init__(self,p=0.5):
-        self.p = p
-
-
-    def __call__(self, img, target):
-        if random.random() > self.p:
-            return img,target
-
-
-        height,width,_ = img.shape
-        scales = [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16
-
-        for s in scales:
-            mask_h = random.randint(1, int(height * s))
-            mask_w = random.randint(1, int(width* s))
-
-            # box
-            xmin = max(0, random.randint(0, height) - mask_w // 2)
-            ymin = max(0, random.randint(0, width) - mask_h // 2)
-            xmax = min(width, xmin + mask_w)
-            ymax = min(height, ymin + mask_h)
-
-            # apply random color mask
-            img[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]
-
-            # select unobscured target box
-            if len(target)> 0:
-                mask_box = torch.tensor([xmin,ymin,xmax,ymax])[None,:]
-                mask_box = BoxList(mask_box,image_size=(width,height),mode='xyxy')
-                ioa = boxlist_ioa(mask_box,target).squeeze()
-
-                target = target[(ioa<0.6).reshape(-1)]
-
-        return img,target
-
-class Mosaic:
-    """ https://arxiv.org/abs/1905.04899
-    """
-    def __init__(self,image_size,dataset):
-        self.image_size = image_size # width,height
-        self.dataset = dataset
-
-    def __call__(self, img, target):
-        labels4 = []
-        img4 = np.full((self.image_size[1] * 2, self.image_size[0]* 2, img.shape[2]), 114, dtype=np.uint8)
-        xc = int(random.uniform(self.image_size[0] * 0.5, self.image_size[0] * 1.5))
-        yc = int(random.uniform(self.image_size[1] * 0.5, self.image_size[1] * 1.5))
-        other_indices = [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
-
-        for i in range(4):
-
-            if i == 0: # left top
-                h, w, _ = img.shape
-                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
-                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h# xmin, ymin, xmax, ymax (small image)
-                x_left,y_top = x1a,y1a
-            elif i == 1: # right top
-                img,target,_ = self.dataset[other_indices[i-1]]
-                h,w,_ = img.shape
-                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, self.image_size[0] * 2), yc
-                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
-            elif i == 2:  # left bottom
-                img, target,_ = self.dataset[other_indices[i - 1]]
-                h, w, _ = img.shape
-                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(self.image_size[1] * 2, yc + h)
-                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, max(xc, w), min(y2a - y1a, h)
-            elif i == 3:  # bottom right
-                img, target , _ = self.dataset[other_indices[i - 1]]
-                h, w, _ = img.shape
-                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, self.image_size[0] * 2), min(self.image_size[1] * 2, yc + h)
-                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
-                x_right,y_bottom = x2a,y2a
-
-            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-            padw = x1a - x1b
-            padh = y1a - y1b
-
-            if len(target) > 0:
-                target.bbox[:,0] = target.bbox[:,0] + padw
-                target.bbox[:,1] = target.bbox[:,1] + padh
-                target.bbox[:,2] = target.bbox[:,2] + padw
-                target.bbox[:,3] = target.bbox[:,3] + padh
-                target.size = self.image_size
-            labels4.append(target)
-
-
-        labels4 = cat_boxlist(labels4)
-        # image_box = [self.image_size[0] // 2, self.image_size[1] // 2,
-        #              self.image_size[0] // 2 + self.image_size[0], self.image_size[1] // 2 + self.image_size[1]]
-        image_box = [x_left,y_top,x_right,y_bottom]
-        labels4 = labels4.crop(image_box)
-        labels4 = labels4.clip_to_image(remove_empty=True)
-        img4 = img4[image_box[1]:image_box[3],image_box[0]:image_box[2],:]
-
-
-        print(img4.shape)
-        print(labels4.size)
-        return img4,labels4
-
-
-
-
-
-
-
-class RandomHSV:
-    """
-     https://github.com/WongKinYiu/PyTorch_YOLOv4/blob/master/utils/datasets.py
-    """
-
-    def __init__(self, hgain=0.5, sgain=0.5, vgain=0.5):
-        self.hgain = hgain
-        self.sgain = sgain
-        self.vgain = vgain
-
-    def __call__(self, img, target):
-        r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain] + 1  # random gains
-        img_dst = copy.deepcopy(img)
-        hue, sat, val = cv2.split(cv2.cvtColor(img_dst, cv2.COLOR_BGR2HSV))
-        dtype = img_dst.dtype  # uint8
-
-        x = np.arange(0, 256, dtype=np.int16)
-        lut_hue = ((x * r[0]) % 180).astype(dtype)
-        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
-        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
-
-        img_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))).astype(dtype)
-        cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img_dst)
-        return img_dst, target
-
-
-class RandomAffine:
-    '''
-    # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
-
-    '''
-
-    def __init__(self, degrees=10, translate=.1, scale=.1, shear=10, border=0, fill_color=(114, 114, 114)):
-        self.degrees = degrees
-        self.translate = translate
-        self.scale = scale
-        self.shear = shear
-        self.border = border
-        self.fill_color = fill_color
-
-    def __call__(self, img, target):
-
-        height = img.shape[0] + self.border * 2
-        width = img.shape[1] + self.border * 2
-
-        # Rotation and Scale
-        R = np.eye(3)
-        a = random.uniform(-self.degrees, self.degrees)
-        # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-        s = random.uniform(1 - self.scale, 1 + self.scale)
-        R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
-
-        # Translation
-        T = np.eye(3)
-        T[0, 2] = random.uniform(-self.translate, self.translate) * img.shape[0] + self.border  # x translation (pixels)
-        T[1, 2] = random.uniform(-self.translate, self.translate) * img.shape[1] + self.border  # y translation (pixels)
-
-        # Shear
-        S = np.eye(3)
-        S[0, 1] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # x shear (deg)
-        S[1, 0] = math.tan(random.uniform(-self.shear, self.shear) * math.pi / 180)  # y shear (deg)
-
-        # Combined rotation matrix
-        M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
-        if (self.border != 0) or (M != np.eye(3)).any():  # image changed
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=self.fill_color)
-
-        # Target transform
-        n = len(target)
-        if n:
-            # warp points
-            xy = np.ones((n * 4, 3))  # [x,y,1] to perform [x,y,1]*rotation martix ^ T
-            xy[:, :2] = target.bbox[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)
-            xy = (xy @ M.T)[:, :2].reshape(n, 8)
-
-            # create new boxes
-            x = xy[:, [0, 2, 4, 6]]
-            y = xy[:, [1, 3, 5, 7]]
-            xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
-            boxes = torch.from_numpy(xy).reshape(-1, 4)
-
-            target_new = BoxList(boxes, (width, height), mode='xyxy')
-            target_new._copy_extra_fields(target)
-
-            # reject warped points outside of image
-            target_new = target_new.clip_to_image(remove_empty=False)
-
-            w = target_new.bbox[:, 2] - target_new.bbox[:, 0]
-            h = target_new.bbox[:, 3] - target_new.bbox[:, 1]
-            area = w * h
-            area0 = (target.bbox[:, 2] - target.bbox[:, 0]) * (target.bbox[:, 3] - target.bbox[:, 1])
-            ar, _ = torch.max(torch.stack([w / (h + 1e-16), h / (w + 1e-16)], dim=1), dim=-1)
-            # ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))  # aspect ratio
-            keep = (w > 4) & (h > 4) & (area / (area0 * s + 1e-16) > 0.2) & (ar < 10)
-
-            target_new = target_new[keep]
-        print(f'new shape:{img.shape}')
-        return img, target_new
-
-
-def test():
-    from .dataset import COCODataset
-    from utils.coco_meta import CLASS_NAME
-    dataset = COCODataset('../../03data/coco2017/', 'val')
-
-    def plot_targets_PIL(image, targets):
-        draw = ImageDraw.Draw(image)
-        for target in targets.bbox:
-            draw.rectangle((target[0].item(), target[1].item(), target[2].item(), target[3].item()), outline="red",
-                           width=2)
-
-    def plot_targets_cv2(image, targets):
-        for target, label in zip(targets.bbox, targets.get_field('labels')):
-            cv2.rectangle(image, (int(target[0]), int(target[1])), (int(target[2]), int(target[3])), (0, 255, 0), 2)
-            cv2.putText(image, CLASS_NAME[int(label.item())], (int(target[0]), int(target[1])),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        return image
-
-    for i in range(0, 100):
-        img_origin, targets_origin, _ = dataset[i]
-
-        # randomhsv = RandomHSV(0.5,0.5,0.5)
-        # img,_ = randomhsv(img_origin,targets)
-        # randomaffine = RandomAffine(degrees=1.98,translate=0.05 * 0,scale=0.8,shear=0.641 * 0)
-        # img,targets_new = randomaffine(img_origin,targets)
-        # resize = Resize_For_Efficientnet(2)
-        # img,targets_new = resize(img_origin,targets)
-        # flip = RandomHorizontalFlip()
-        # img,targets_new = flip(img_origin,targets)
-        # flip = RandomVerticalFlip()
-        # img_new,targets_new = flip(img_origin,targets_origin)
-        transform = Compose(
-            [
-                # RandomHSV(0.1,0.1,0.1),
-                #RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
-                # RandomHorizontalFlip(),
-                #Resize_For_Efficientnet(compund_coef=2),
-                #Cutout(0.9),
-                Mosaic(image_size=(768,768),dataset=dataset),
-                Resize_For_Efficientnet(compund_coef=2),
-                ToTensor(),
-                # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
-            ])
-
-        # img_origin = plot_targets(img_origin, targets_origin)
-        img_new, targets_new = transform(img_origin, targets_origin)
-        print(img_new.size())
-
-        # cv2.imshow('image_origin', img_origin)
-        # cv2.waitKey()
-
-        # cv2.imshow('image', img)
-        # cv2.waitKey()
-        # #img_combine = np.hstack((img,img_origin))
-        #
-        from torchvision import transforms
-        #
-
-        # print(targets_new)
-        img_new = transforms.ToPILImage()(img_new).convert('RGB')
-        plot_targets_PIL(img_new, targets_new)
-        img_new.show()
-
-
-if __name__ == '__main__':
-    test()

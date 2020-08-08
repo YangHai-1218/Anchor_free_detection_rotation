@@ -20,7 +20,7 @@ from distributed import (
     sync_batchnorm,
 )
 from utils.ema import EMA
-import os
+import os,cv2
 from tensorboardX import SummaryWriter
 import numpy as np
 
@@ -151,6 +151,7 @@ def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=N
         pbar = enumerate(loader)
 
     for idx, (images, targets, _) in pbar:
+
         model.zero_grad()
 
         images = images.to(device)
@@ -168,7 +169,7 @@ def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=N
         nn.utils.clip_grad_norm_(model.parameters(), 10)
         optimizer.step()
         # ema update
-        ema.update()
+        #ema.update()
 
         # for iter scheduler
         if idx<warmup_scheduler.niters and epoch<args.warmup_epoch:
@@ -225,6 +226,10 @@ def save_checkpoint(model,args,optimizer,epoch):
 
 
 if __name__ == '__main__':
+
+    cv2.setNumThreads(0)
+    cv2.ocl.setUseOpenCL(False)
+
     args = get_args()
 
     # Create working directory for saving intermediate results
@@ -448,12 +453,12 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        #epoch_loss = train(args, epoch, train_loader, model, optimizer, device, [scheduler,warmup_scheduler],
-                           #logger=logger,ema=ema)
+        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, [scheduler,warmup_scheduler],
+                           logger=logger,ema=None)
 
-        #save_checkpoint(model,args,optimizer,epoch)
+        save_checkpoint(model,args,optimizer,epoch)
 
-        valid(args, epoch, valid_loader, valid_set, model, device, logger=logger,ema=ema)
+        valid(args, epoch, valid_loader, valid_set, model, device, logger=logger,ema=None)
 
         if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
             val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)

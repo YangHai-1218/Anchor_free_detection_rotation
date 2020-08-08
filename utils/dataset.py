@@ -59,9 +59,9 @@ class COCODataset(datasets.CocoDetection):
         img, annots = super().__getitem__(index)
 
 
-        img = cv2.cvtColor(np.asarray(img),cv2.COLOR_RGB2BGR)
-
-        height, width,_ = img.shape
+        #img = cv2.cvtColor(np.asarray(img),cv2.COLOR_RGB2BGR)
+        width,height = img.size
+        #height, width,_ = img.shape
         annots = [o for o in annots if o['iscrowd'] == 0]
 
         boxes = [o['bbox'] for o in annots]
