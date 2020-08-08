@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from utils.base_conv import SeparableConvBlock
-from utils.Activation import Swish,MemoryEfficientSwish
+from utils.activation import Swish,MemoryEfficientSwish
 from utils.module_init import focal_loss_init,variance_scaling_
 import math
 

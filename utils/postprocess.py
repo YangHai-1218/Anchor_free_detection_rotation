@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from boxlist import BoxList, boxlist_ml_nms, remove_small_boxes, cat_boxlist
+from utils.boxlist import BoxList, boxlist_ml_nms, remove_small_boxes, cat_boxlist
 from loss import permute_and_flatten
 
 class ATSSPostProcessor(nn.Module):

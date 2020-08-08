@@ -7,7 +7,7 @@ from utils.base_conv import (
     Conv2dStaticSamePadding,
     MaxPool2dStaticSamePadding,
 )
-from utils.Activation import (
+from utils.activation import (
     MemoryEfficientSwish,
     Swish,
 )

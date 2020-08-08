@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import math
 from torch.nn import functional as F
-from .Activation import (
+from .activation import (
     MemoryEfficientSwish,
     Swish
 )

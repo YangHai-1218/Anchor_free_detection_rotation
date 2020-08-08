@@ -1,16 +1,14 @@
-import os
-
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, sampler
 from tqdm import tqdm
 
 from argument import get_args
-from backbone import vovnet39, vovnet57, resnet18, resnet50, resnet101
-from dataset import COCODataset, collate_fn
+from backbone import vovnet39, vovnet57, resnet50, resnet101
+from utils.dataset import COCODataset, collate_fn
 from model import ATSS,Efficientnet_Bifpn_ATSS
-import transform
-from LRScheduler import GluonLRScheduler,iter_per_epoch_cal
+from utils import transform
+from utils.lrscheduler import GluonLRScheduler,iter_per_epoch_cal,set_schduler_with_wormup
 from evaluate import evaluate
 from distributed import (
     get_rank,
@@ -19,7 +17,9 @@ from distributed import (
     DistributedSampler,
     all_gather,
     get_world_size,
+    sync_batchnorm,
 )
+from utils.ema import EMA
 import os
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -93,7 +93,7 @@ def valid_loss(args, epoch, loader, dataset, model, device, logger=None):
 
 
 @torch.no_grad()
-def valid(args, epoch, loader, dataset, model, device, logger=None):
+def valid(args, epoch, loader, dataset, model, device, logger=None,ema=None):
 
     if args.distributed:
         model = model.module
@@ -113,8 +113,9 @@ def valid(args, epoch, loader, dataset, model, device, logger=None):
         model.zero_grad()
 
         images = images.to(device)
-        targets = [target.to(device) for target in targets]
+        if ema: ema.apply_shadow()
         pred, _ = model(images)
+        if ema: ema.restore()
         pred = [p.to('cpu') for p in pred]
 
         preds.update({id: p for id, p in zip(ids, pred)})
@@ -140,10 +141,10 @@ def valid(args, epoch, loader, dataset, model, device, logger=None):
 
     return preds
 
-def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=None):
+def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=None,ema=None):
     epoch_loss = []
     model.train()
-
+    scheduler, warmup_scheduler = scheduler[0], scheduler[1]
     if get_rank() == 0:
         pbar = tqdm(enumerate(loader), total=len(loader), dynamic_ncols=True)
     else:
@@ -164,11 +165,15 @@ def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=N
         loss = loss_cls + loss_box + loss_center
 
         loss.backward()
-        # nn.utils.clip_grad_norm_(model.parameters(), 10)
+        nn.utils.clip_grad_norm_(model.parameters(), 10)
         optimizer.step()
+        # ema update
+        ema.update()
 
         # for iter scheduler
-        if scheduler:
+        if idx<warmup_scheduler.niters and epoch<args.warmup_epoch:
+            warmup_scheduler.step()
+        else:
             scheduler.step()
 
         loss_reduced = reduce_loss_dict(loss_dict)
@@ -255,7 +260,7 @@ if __name__ == '__main__':
             transform.RandomHorizontalFlip(0.5),
             transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
             transform.ToTensor(),
-            transform.Normalize(args.pixel_mean,args.pixel_std),
+            transform.Normalize(args.pixel_mean, args.pixel_std),
         ]
     )
 
@@ -284,7 +289,7 @@ if __name__ == '__main__':
         num_workers=args.num_workers,
         collate_fn=collate_fn(args),
     )
-    iter_per_epoch = iter_per_epoch_cal(args, train_set)
+
 
     if args.val_with_loss:
         valid_loss_set = COCODataset(args.path, 'val_loss', valid_trans)
@@ -357,14 +362,14 @@ if __name__ == '__main__':
         # if not freeze the backbone, then finetune the backbone,
         optimizer = optim.SGD(
             model.backbone.backbone_net.parameters(),
-            lr = args.lr*args.lr_gamma_Efficientnet,
+            lr = 0,
             momentum = 0.9,
             weight_decay = 0.0001,
             nesterov = True,
         )
-        optimizer.add_param_group({'params':list(model.backbone.bifpn.parameters()),'lr':args.lr*args.lr_gamma_BiFPN,
+        optimizer.add_param_group({'params':list(model.backbone.bifpn.parameters()),'lr':0,
                                    'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
-        optimizer.add_param_group({'params':list(model.head.parameters()),'lr':args.lr,'momentum':0.9,'weight_decay':0.0001,
+        optimizer.add_param_group({'params':list(model.head.parameters()),'lr':0,'momentum':0.9,'weight_decay':0.0001,
                                    'nesterov':True})
         print(f'[INFO] efficientnet use the lr :{args.lr*args.lr_gamma_Efficientnet} to finetune,'
               f' bifpn use the lr:{args.lr*args.lr_gamma_BiFPN} to finetune')
@@ -391,16 +396,26 @@ if __name__ == '__main__':
     #     optimizer, milestones=args.lr_steps, gamma=args.lr_gamma,last_epoch=last_epoch
     # )
     #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
-    scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=args.epoch,iters_per_epoch=iter_per_epoch)
+    iter_per_epoch = iter_per_epoch_cal(args, train_set)
+    scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=(args.epoch-args.warmup_epoch),
+                                 iters_per_epoch=iter_per_epoch)
+    warmup_scheduler, schdeduler = set_schduler_with_wormup(args,iter_per_epoch,optimizer,scheduler)
 
+
+    ema = EMA(model,decay=0.999,enable=args.EMA)
 
     if args.distributed:
+        if args.batch <= 4:
+            # if the batchsize for a single GPU <= 4, then use the sync_batchnorm
+            model = sync_batchnorm(model)
         model = nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.local_rank],
             output_device=args.local_rank,
             broadcast_buffers=False,
         )
+
+
 
     train_loader = DataLoader(
         train_set,
@@ -433,11 +448,12 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, scheduler,logger=logger)
+        #epoch_loss = train(args, epoch, train_loader, model, optimizer, device, [scheduler,warmup_scheduler],
+                           #logger=logger,ema=ema)
 
-        save_checkpoint(model,args,optimizer,epoch)
+        #save_checkpoint(model,args,optimizer,epoch)
 
-        valid(args, epoch, valid_loader, valid_set, model, device, logger=logger)
+        valid(args, epoch, valid_loader, valid_set, model, device, logger=logger,ema=ema)
 
         if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
             val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)

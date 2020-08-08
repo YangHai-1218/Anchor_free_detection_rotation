@@ -7,7 +7,7 @@ from .Efficientnet_utils import (
     Swish,
     Efficnetnet_param,
 )
-from utils.Activation import (
+from utils.activation import (
     MemoryEfficientSwish,
 )
 from FPN.BiFPN import BiFPN

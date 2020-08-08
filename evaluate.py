@@ -5,6 +5,7 @@ from collections import OrderedDict
 import numpy as np
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
+from utils.boxlist import BoxList
 
 
 def evaluate(dataset, predictions):
@@ -73,12 +74,36 @@ def make_coco_detection(predictions, dataset):
         img_meta = dataset.get_image_meta(id)
         width = img_meta['width']
         height = img_meta['height']
-        pred = pred.resize((width, height))
-        pred = pred.convert('xywh')
 
-        boxes = pred.bbox.tolist()
-        scores = pred.get_field('scores').tolist()
-        labels = pred.get_field('labels').tolist()
+
+
+        resized_width,resized_height = pred.size
+        print(resized_height, resized_width)
+        if width>height:
+            scale = resized_width/width
+            size = (resized_width,int(scale*height))
+        else:
+            scale = resized_height/height
+            size = (int(width*scale),resized_height)
+        print(size)
+        #mask = (pred.bbox[2]>size[0]) & (pred.bbox[3]>size[1])
+        #print(mask)
+        # for letterbox reisze
+        pred_resize = BoxList(pred.bbox,size,mode='xyxy')
+        pred_resize._copy_extra_fields(pred)
+        pred_resize = pred_resize.clip_to_image(remove_empty=True)
+        pred_resize = pred_resize.resize((width,height))
+        pred_resize = pred_resize.convert('xywh')
+        boxes = pred_resize.bbox.tolist()
+        scores = pred_resize.get_field('scores').tolist()
+        labels = pred_resize.get_field('labels').tolist()
+
+        # pred = pred.resize((width, height))
+        # pred = pred.convert('xywh')
+        #
+        # boxes = pred.bbox.tolist()
+        # scores = pred.get_field('scores').tolist()
+        # labels = pred.get_field('labels').tolist()
 
         labels = [dataset.id2category[i] for i in labels]
 

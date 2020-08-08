@@ -1,29 +1,22 @@
 import os
 
 import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader, sampler
-from tqdm import tqdm
+from torch import nn
+from torch.utils.data import DataLoader
 
 from argument import get_args
-from backbone import vovnet39, resnet18, resnet50
-from dataset import COCODataset, collate_fn
-from model import ATSS,Efficientnet_Bifpn_ATSS
-import transform
-from evaluate import evaluate
+from utils.dataset import COCODataset, collate_fn
+from model import Efficientnet_Bifpn_ATSS
+from utils import transform
 from distributed import (
     get_rank,
     synchronize,
-    reduce_loss_dict,
-    DistributedSampler,
-    all_gather,
 )
 from train import (
-    accumulate_predictions,
     valid,
     data_sampler,
 )
-from coco_meta import CLASS_NAME
+from utils.coco_meta import CLASS_NAME
 from visualize import show_bbox
 
 def save_predictions_to_images(dataset, predictions):
@@ -90,12 +83,12 @@ if __name__ == '__main__':
         ]
     )
 
-    valid_set = COCODataset("/data/COCO_17/", 'val', valid_trans)
+    valid_set = COCODataset("data/coco2017/", 'val', valid_trans)
 
     # backbone = vovnet39(pretrained=False)
     # backbone = resnet18(pretrained=False)
-    backbone = resnet50(pretrained=False)
-    model = ATSS(args, backbone)
+    #backbone = resnet50(pretrained=False)
+    #model = ATSS(args, backbone)
     model = Efficientnet_Bifpn_ATSS(args, compound_coef=args.backbone_coef, load_backboe_weight=False)
 
     # load weight
@@ -123,6 +116,6 @@ if __name__ == '__main__':
     )
 
     predictions = valid(args, 0, valid_loader, valid_set, model, device)
-    save_predictions_to_images(valid_set, predictions)
+    #save_predictions_to_images(valid_set, predictions)
 
 

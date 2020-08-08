@@ -4,6 +4,7 @@ import pickle
 import torch
 from torch import distributed as dist
 from torch.utils.data.sampler import Sampler
+from torch.nn import SyncBatchNorm
 
 
 def get_rank():
@@ -163,3 +164,12 @@ class DistributedSampler(Sampler):
 
     def set_epoch(self, epoch):
         self.epoch = epoch
+
+
+def sync_batchnorm(model):
+    world_size = get_world_size()
+    process_ids = list(range(world_size))
+    process_group = dist.new_group(process_ids)
+    model = SyncBatchNorm.convert_sync_batchnorm(model,process_group)
+    return model
+

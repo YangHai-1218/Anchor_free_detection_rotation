@@ -3,7 +3,7 @@ import os
 import torch
 from torchvision import datasets
 
-from boxlist import BoxList
+from utils.boxlist import BoxList
 import cv2
 import numpy as np
 

@@ -1,7 +1,7 @@
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
 import warnings
-from math import cos,pi
+from math import cos,pi,ceil
 
 
 class GluonLRScheduler(_LRScheduler):
@@ -52,7 +52,7 @@ class GluonLRScheduler(_LRScheduler):
         self.target_lr = target_lr
         self.niters = niters
         self.milestone = step_iter
-        epoch_iters = nepochs * iters_per_epoch
+        epoch_iters = ceil(nepochs * iters_per_epoch)
         if epoch_iters > 0:
             self.niters = epoch_iters
             if step_epoch is not None:
@@ -98,13 +98,36 @@ class GluonLRScheduler(_LRScheduler):
             if isinstance(self.target_lr, list) or isinstance(self.target_lr, tuple):
                 # this is for finetune
                 if len(self.target_lr) != len(self.optimizer.param_groups):
-                    raise Exception("the number of target_lr should equal to the number of paramgroups")
+                    raise RuntimeError("the number of target_lr should equal to the number of paramgroups")
                 learning_rate = [(base_lr - target_lr) * factor + target_lr for base_lr, target_lr
                                  in zip(self.base_lrs, self.target_lr)]
             else:
                 learning_rate = [(base_lr - self.target_lr) * factor + self.target_lr for base_lr in self.base_lrs]
 
         return learning_rate
+
+    def set_baselrs(self,base_lrs):
+        if isinstance(base_lrs,list) or isinstance(base_lrs,tuple):
+            if len(base_lrs) != len(self.optimizer.param_groups):
+                raise RuntimeError("the number of base_lrs should equal to the number of paramgroups")
+            else:
+                self.base_lrs = base_lrs
+        elif isinstance(base_lrs,float):
+            self.base_lrs = base_lrs
+        else:
+            raise RuntimeError("Should not be here")
+
+
+def set_schduler_with_wormup(args,iter_per_epoch,optimizer,schdeduler):
+    iter_warmup = ceil(args.warmup_epoch * iter_per_epoch)
+    warmup_scheduler = GluonLRScheduler(optimizer, mode='linear', niters=iter_warmup,
+                                        target_lr=[args.lr * args.lr_gamma_Efficientnet,
+                                                   args.lr * args.lr_gamma_BiFPN,
+                                                   args.lr])
+    schdeduler.set_baselrs(warmup_scheduler.target_lr)
+    return warmup_scheduler,schdeduler
+
+
 
 def iter_per_epoch_cal(args,dataset):
     n_gpu = args.n_gpu
@@ -124,16 +147,20 @@ def test():
     model = Efficientnet_Bifpn_ATSS(args,load_backboe_weight=False)
     optimizer = SGD(
         model.backbone.backbone_net.parameters(),
-        lr=1e-4,
+        lr=0,
         momentum=0.9,
         weight_decay=0.0001,
         nesterov=True,
     )
-    optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 1e-3,
+    optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 0,
                                'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
 
     niters = int(1200)
+    warmup_scheduler = GluonLRScheduler(optimizer, mode='linear', nepochs=1,iters_per_epoch=50,
+                                        target_lr=[1e-4,1e-3])
     scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=24,iters_per_epoch=50)
+    scheduler.set_baselrs(warmup_scheduler.target_lr)
+    initial_schedluer = False
     #scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=10)
     lrs_1 = []
     lrs_2 = []
@@ -141,7 +168,10 @@ def test():
     lrs_2.append(optimizer.param_groups[1]['lr'])
     for i in range(niters):
         optimizer.step()
-        scheduler.step()
+        if i < warmup_scheduler.niters:
+            warmup_scheduler.step()
+        else:
+            scheduler.step()
         lrs_1.append(optimizer.param_groups[0]['lr'])
         lrs_2.append(optimizer.param_groups[1]['lr'])
 

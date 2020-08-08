@@ -2,7 +2,7 @@ import os
 
 import torch
 from torch import nn
-from boxlist import cat_boxlist, boxlist_iou
+from utils.boxlist import cat_boxlist, boxlist_iou
 
 INF = 100000000
 
