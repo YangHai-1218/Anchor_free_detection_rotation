@@ -7,7 +7,7 @@ from torchvision.transforms import functional as F
 import cv2
 import copy
 import math
-from utils.boxlist import BoxList
+from .boxlist import BoxList,boxlist_ioa
 
 """
 Note that: this data augemntation pipeline is based on opencv, 
@@ -206,6 +206,45 @@ class RandomBrightness:
 
         return img, target
 
+class Cutout:
+    """
+    https://arxiv.org/abs/1708.04552
+    """
+    def __init__(self,p=0.5):
+        self.p = p
+
+
+    def __call__(self, img, target):
+        if random.random() > self.p:
+            return img,target
+
+
+        height,width,_ = img.shape
+        scales = [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16
+
+        for s in scales:
+            mask_h = random.randint(1, int(height * s))
+            mask_w = random.randint(1, int(width* s))
+
+            # box
+            xmin = max(0, random.randint(0, height) - mask_w // 2)
+            ymin = max(0, random.randint(0, width) - mask_h // 2)
+            xmax = min(width, xmin + mask_w)
+            ymax = min(height, ymin + mask_h)
+
+            # apply random color mask
+            img[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]
+
+            # select unobscured target box
+            if len(target)> 0:
+                mask_box = torch.tensor([xmin,ymin,xmax,ymax])[None,:]
+                mask_box = BoxList(mask_box,image_size=(width,height),mode='xyxy')
+                ioa = boxlist_ioa(mask_box,target).squeeze()
+
+                target = target[(ioa<0.6).reshape(-1)]
+
+        return img,target
+
 
 class RandomHSV:
     """
@@ -248,6 +287,7 @@ class RandomAffine:
         self.fill_color = fill_color
 
     def __call__(self, img, target):
+
         height = img.shape[0] + self.border * 2
         width = img.shape[1] + self.border * 2
 
@@ -256,7 +296,6 @@ class RandomAffine:
         a = random.uniform(-self.degrees, self.degrees)
         # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
         s = random.uniform(1 - self.scale, 1 + self.scale)
-        print(s)
         R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
         # Translation
@@ -288,8 +327,9 @@ class RandomAffine:
             xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
             boxes = torch.from_numpy(xy).reshape(-1, 4)
 
-            target_new = BoxList(boxes, (height, width), mode='xyxy')
-            target_new.add_field('labels', target.get_field('labels'))
+            target_new = BoxList(boxes, (width, height), mode='xyxy')
+            target_new._copy_extra_fields(target)
+
             # reject warped points outside of image
             target_new = target_new.clip_to_image(remove_empty=False)
 
@@ -302,7 +342,7 @@ class RandomAffine:
             keep = (w > 4) & (h > 4) & (area / (area0 * s + 1e-16) > 0.2) & (ar < 10)
 
             target_new = target_new[keep]
-
+        print(f'new shape:{img.shape}')
         return img, target_new
 
 
@@ -340,9 +380,10 @@ def test():
         transform = Compose(
             [
                 # RandomHSV(0.1,0.1,0.1),
-                # RandomAffine(degrees= 1.98*0,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
+                #RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
                 # RandomHorizontalFlip(),
-                Resize_For_Efficientnet(compund_coef=2),
+                #Resize_For_Efficientnet(compund_coef=2),
+                Cutout(0.9),
                 ToTensor(),
                 # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
             ])
