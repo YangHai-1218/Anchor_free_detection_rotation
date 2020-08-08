@@ -27,11 +27,11 @@ def get_args():
     args.lr_gamma = 0.1
 
     # backbone name type: 'model_type - coef' ,for examplt:'ResNet-101','Efficientdet-0'
-    args.backbone_name = 'Efficientdet-0'
+    args.backbone_name = 'Efficientdet-2'
     get_mdoel_type(args)
     args.load_pretrained_weight = True
     args.load_checkpoint = False
-    args.weight_path = 'weights/efficientdet-d0.pth'
+    args.weight_path = 'weights/efficientdet-d2.pth'
     args.head_only = False
     args.finetune = True
     args.early_stopping = False
@@ -41,7 +41,7 @@ def get_args():
     args.lr_gamma_Efficientnet= 0.1
 
     args.lrschduler_type = 'cosine'
-    args.warmup_epoch = 0
+    args.warmup_epoch = 0.5
 
     args.EMA = False
 

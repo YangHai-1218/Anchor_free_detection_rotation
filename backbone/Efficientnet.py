@@ -182,7 +182,7 @@ class EfficientnetWithBiFPN(nn.Module):
         return (p3,p4,p5,p6,p7)
 
     def load_total_weight(self, weight_path):
-        weights = torch.load(weight_path)
+        weights = torch.load(weight_path,map_location='cpu')
         weights_new = weights.copy()
         for k in weights:
             if k.startswith('regressor') or k.startswith('classifier'):

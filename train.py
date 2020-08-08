@@ -17,7 +17,8 @@ from distributed import (
     DistributedSampler,
     all_gather,
     get_world_size,
-    sync_batchnorm,
+    convert_sync_bn,
+    simple_group_split
 )
 from utils.ema import EMA
 import os,cv2
@@ -245,6 +246,7 @@ if __name__ == '__main__':
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
         torch.distributed.init_process_group(backend='gloo', init_method='env://')
+        #torch.distributed.init_process_group(backend='nccl', init_method='env://')
         synchronize()
 
     device = 'cuda'
@@ -345,7 +347,7 @@ if __name__ == '__main__':
     model = model.to(device)
 
     if args.load_checkpoint:
-        model.load_state_dict(torch.load(args.weight_path)['model'])
+        model.load_state_dict(torch.load(args.weight_path,map_location='cpu')['model'])
         print(f'[INFO] load checkpoint weight successfully!')
 
 
@@ -410,9 +412,13 @@ if __name__ == '__main__':
     ema = EMA(model,decay=0.999,enable=args.EMA)
 
     if args.distributed:
-        if args.batch <= 4:
-            # if the batchsize for a single GPU <= 4, then use the sync_batchnorm
-            model = sync_batchnorm(model)
+        # if args.batch <= 4:
+        #     #if the batchsize for a single GPU <= 4, then use the sync_batchnorm
+        #     world_size = get_world_size()
+        #     rank = get_rank()
+        #     sync_groups = world_size // args.n_gpu
+        #     process_group = simple_group_split(world_size, rank, sync_groups)
+        #     convert_sync_bn(model, process_group)
         model = nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.local_rank],
@@ -454,7 +460,7 @@ if __name__ == '__main__':
         epoch += (last_epoch + 1)
 
         epoch_loss = train(args, epoch, train_loader, model, optimizer, device, [scheduler,warmup_scheduler],
-                           logger=logger,ema=None)
+                           logger=logger,ema=ema)
 
         save_checkpoint(model,args,optimizer,epoch)
 
