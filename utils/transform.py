@@ -206,6 +206,70 @@ class RandomBrightness:
 
         return img, target
 
+
+
+
+class Multi_Scale_with_Crop:
+    def __init__(self,scales,target_size,pad_color=(114, 114, 114)):
+        '''
+        scales: list, short edge of the image is randomly sample from scales, and the long edge is fixed as 2000
+        target_size : after rescaling the image, random crop a region of target size from rescaled image
+        target_size: (w,h)
+        '''
+        self.short_edges = scales
+        self.long_edge = 3840
+        self.target_size = target_size
+        self.color = pad_color
+
+    def __call__(self, img, target):
+        short_edge = random.choice(self.short_edges)
+        height, width, _ = img.shape
+        if height > width:
+            scale_factor = short_edge/width
+            resized_height = math.ceil(scale_factor*height)
+            resized_width = short_edge
+            if resized_height > self.long_edge:
+                scale_factor = self.long_edge / height
+                resized_width = math.ceil(scale_factor*width)
+                resized_height = self.long_edge
+        else:
+            scale_factor = short_edge/height
+            resized_width = math.ceil(scale_factor*width)
+            resized_height = short_edge
+            if resized_width > self.long_edge:
+                scale_factor = self.long_edge / width
+                resized_height = math.ceil(scale_factor*height)
+                resized_width = self.long_edge
+
+        #print('resized_width:',resized_width,'resized_height:',resized_height)
+        resized_image = cv2.resize(img,(resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+        resized_target = target.resize((resized_width, resized_height))
+
+        pad_w = self.target_size[0] - resized_width if self.target_size[0]>resized_width else 0
+        pad_h = self.target_size[1] - resized_height if self.target_size[1]>resized_height else 0
+        new_image = np.zeros((resized_height+pad_h,resized_width+pad_w, 3), dtype=np.uint8)
+        new_image[:, :, 0] = self.color[0]
+        new_image[:, :, 1] = self.color[1]
+        new_image[:, :, 2] = self.color[2]
+        new_image[0:resized_height, 0:resized_width] = resized_image
+
+        left_x = random.randint(0,resized_width+pad_w-self.target_size[0])
+        top_y = random.randint(0,resized_height+pad_h-self.target_size[1])
+        right_x = left_x + self.target_size[0]
+        bottom_y = top_y+self.target_size[1]
+
+        croped_image = new_image[top_y:bottom_y,left_x:right_x]
+        croped_target = resized_target.crop([left_x,top_y,right_x,bottom_y])
+        croped_target = croped_target.clip_to_image(remove_empty=True)
+
+        return croped_image,croped_target
+
+
+
+
+
+
+
 class Cutout:
     """
     https://arxiv.org/abs/1708.04552
@@ -453,15 +517,16 @@ def test():
                 # RandomHorizontalFlip(),
                 #Resize_For_Efficientnet(compund_coef=2),
                 #Cutout(0.9),
-                Mosaic(image_size=(768,768),dataset=dataset),
-                Resize_For_Efficientnet(compund_coef=2),
+                # Mosaic(image_size=(768,768),dataset=dataset),
+                # Resize_For_Efficientnet(compund_coef=2),
+                Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
                 ToTensor(),
                 # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
             ])
 
         # img_origin = plot_targets(img_origin, targets_origin)
         img_new, targets_new = transform(img_origin, targets_origin)
-        print(img_new.size())
+        print(f'image_size:{img_new.size()}')
 
         # cv2.imshow('image_origin', img_origin)
         # cv2.waitKey()
