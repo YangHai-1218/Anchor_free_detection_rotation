@@ -114,9 +114,11 @@ def valid(args, epoch, loader, dataset, model, device, logger=None,ema=None):
         model.zero_grad()
 
         images = images.to(device)
+
         if ema: ema.apply_shadow()
         pred, _ = model(images)
         if ema: ema.restore()
+
         pred = [p.to('cpu') for p in pred]
 
         preds.update({id: p for id, p in zip(ids, pred)})
@@ -170,7 +172,7 @@ def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=N
         nn.utils.clip_grad_norm_(model.parameters(), 10)
         optimizer.step()
         # ema update
-        #ema.update()
+        ema.update()
 
         # for iter scheduler
         if idx<warmup_scheduler.niters and epoch<args.warmup_epoch:
@@ -404,8 +406,8 @@ if __name__ == '__main__':
     # )
     #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
     iter_per_epoch = iter_per_epoch_cal(args, train_set)
-    scheduler = GluonLRScheduler(optimizer,mode='cosine',nepochs=(args.epoch-args.warmup_epoch),
-                                 iters_per_epoch=iter_per_epoch)
+    scheduler = GluonLRScheduler(optimizer,mode='step',nepochs=(args.epoch-args.warmup_epoch),
+                                 iters_per_epoch=iter_per_epoch,step_epoch=[9,11])
     warmup_scheduler, schdeduler = set_schduler_with_wormup(args,iter_per_epoch,optimizer,scheduler)
 
 

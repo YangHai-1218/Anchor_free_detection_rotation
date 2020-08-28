@@ -62,6 +62,7 @@ def get_args():
     args.nms_threshold = 0.6
     args.min_size = 0
     args.detections_per_img = 100
+    args.voting_threshold = 0.5
     #
     # how to select positves: ATSS , SSC (FCOS), IoU (RetinaNet), TOPK
     args.positive_type = "ATSS"

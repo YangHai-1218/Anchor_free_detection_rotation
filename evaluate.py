@@ -78,16 +78,17 @@ def make_coco_detection(predictions, dataset):
 
 
         resized_width,resized_height = pred.size
-        print(resized_height, resized_width)
+
         if width>height:
             scale = resized_width/width
             size = (resized_width,int(scale*height))
         else:
             scale = resized_height/height
             size = (int(width*scale),resized_height)
-        print(size)
+
         #mask = (pred.bbox[2]>size[0]) & (pred.bbox[3]>size[1])
         #print(mask)
+
         # for letterbox reisze
         pred_resize = BoxList(pred.bbox,size,mode='xyxy')
         pred_resize._copy_extra_fields(pred)

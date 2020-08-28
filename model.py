@@ -410,6 +410,8 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
         )
 
     def forward(self, images, targets=None,val_withloss=False):
+
+
         features = self.backbone(images.tensors)
         if False:
             for feature in features:
