@@ -207,7 +207,7 @@ class RandomBrightness:
         return img, target
 
 
-class Random_MixUp:
+class RandomMixUp:
     '''
     https://github.com/dmlc/gluon-cv/blob/49be01910a8e8424b017ed3df65c4928fc918c67/gluoncv/data/mixup/detection.py
     '''
@@ -226,21 +226,23 @@ class Random_MixUp:
         lambd = np.random.beta(self.alpha, self.beta)
         img1 = img
         target1 = target
-        idx2 = random.choice(range(len(self.datatset)))
+        idx2 = random.choice(range(len(self.dataset)))
         img2,target2,_ = self.dataset[idx2]
         height = max(img1.shape[0],img2.shape[0])
         width = max(img1.shape[1],img2.shape[1])
 
-        new_image = np.ones((height,width,3),dtype=np.uint8) * 114
+        new_image = np.zeros((height,width,3),dtype=np.float32)
         new_image[0:img1.shape[0],0:img1.shape[1],:] = img1 * lambd
-        new_image[0:img2.shape[0],0:img2.shape[1],:] += img2*(1-lambd)
+        new_image[0:img2.shape[0],0:img2.shape[1],:] += img2 * (1-lambd)
         weight1 = torch.zeros(len(target1),dtype=torch.float) + lambd
         weight2 = torch.zeros(len(target2),dtype=torch.float) + (1-lambd)
 
         target1.add_field('weights',weight1)
         target2.add_field('weights',weight2)
-        target = cat_boxlist(target1,target2)
-
+        target1.size = (width,height)
+        target2.size = (width,height)
+        target = cat_boxlist([target1,target2])
+        new_image = new_image.astype(np.uint8)
         return new_image,target
 
 
@@ -522,10 +524,16 @@ def test():
     dataset = COCODataset('../../03data/coco2017/', 'val')
 
     def plot_targets_PIL(image, targets):
+
         draw = ImageDraw.Draw(image)
-        for target in targets.bbox:
+        labels = targets.get_field("labels")
+        weights = targets.get_field("weights")
+
+        for target,weight in zip(targets.bbox,weights):
             draw.rectangle((target[0].item(), target[1].item(), target[2].item(), target[3].item()), outline="red",
                            width=2)
+            #draw.text((target[0].item(), target[1].item()),CLASS_NAME[int(label.item())],fill=(0,255,0))
+            draw.text((target[0].item(), target[1].item()), str(weight.item()), fill=(0, 255, 0))
 
     def plot_targets_cv2(image, targets):
         for target, label in zip(targets.bbox, targets.get_field('labels')):
@@ -556,7 +564,8 @@ def test():
                 #Cutout(0.9),
                 # Mosaic(image_size=(768,768),dataset=dataset),
                 # Resize_For_Efficientnet(compund_coef=2),
-                Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
+                #Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
+                RandomMixUp(dataset),
                 ToTensor(),
                 # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
             ])
