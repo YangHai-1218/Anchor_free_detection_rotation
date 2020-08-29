@@ -207,6 +207,43 @@ class RandomBrightness:
         return img, target
 
 
+class Random_MixUp:
+    '''
+    https://github.com/dmlc/gluon-cv/blob/49be01910a8e8424b017ed3df65c4928fc918c67/gluoncv/data/mixup/detection.py
+    '''
+    # TODO WEIGHTLOSS
+    def __init__(self,dataset,alpha=1.5,beta=1.5,p=0.5):
+        self.alpha = alpha
+        self.beta = beta
+        self.p = p
+        self.dataset = dataset
+
+    def __call__(self, img, target):
+        if random.random()>self.p:
+            weight = target.bbox.new_ones(len(target))
+            target.add_field("weights",weight)
+            return img,target
+        lambd = np.random.beta(self.alpha, self.beta)
+        img1 = img
+        target1 = target
+        idx2 = random.choice(range(len(self.datatset)))
+        img2,target2,_ = self.dataset[idx2]
+        height = max(img1.shape[0],img2.shape[0])
+        width = max(img1.shape[1],img2.shape[1])
+
+        new_image = np.ones((height,width,3),dtype=np.uint8) * 114
+        new_image[0:img1.shape[0],0:img1.shape[1],:] = img1 * lambd
+        new_image[0:img2.shape[0],0:img2.shape[1],:] += img2*(1-lambd)
+        weight1 = torch.zeros(len(target1),dtype=torch.float) + lambd
+        weight2 = torch.zeros(len(target2),dtype=torch.float) + (1-lambd)
+
+        target1.add_field('weights',weight1)
+        target2.add_field('weights',weight2)
+        target = cat_boxlist(target1,target2)
+
+        return new_image,target
+
+
 
 
 class Multi_Scale_with_Crop:

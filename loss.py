@@ -258,11 +258,18 @@ class ATSSLoss(object):
     def prepare_targets(self, targets, anchors):
         cls_labels = []
         reg_targets = []
+        weights_label = []
         for im_i in range(len(targets)):
             targets_per_im = targets[im_i]
             assert targets_per_im.mode == "xyxy"
             bboxes_per_im = targets_per_im.bbox
             labels_per_im = targets_per_im.get_field("labels")
+
+            try:
+                weights_per_im = targets_per_im.get_field("weights")
+            except:
+                weights_per_im = targets_per_im.bbox.new_ones(len(targets_per_im))
+
             anchors_per_im = cat_boxlist(anchors[im_i])
             num_gt = bboxes_per_im.shape[0]
 
@@ -310,6 +317,9 @@ class ATSSLoss(object):
                 cls_labels_per_im = labels_per_im[locations_to_gt_inds]
                 cls_labels_per_im[locations_to_min_area == INF] = 0
                 matched_gts = bboxes_per_im[locations_to_gt_inds]
+                # for mixup, weight loss
+                matched_gts_weight = weights_per_im[locations_to_gt_inds]
+
             elif self.positive_type == 'ATSS':
                 num_anchors_per_level = [len(anchors_per_level.bbox) for anchors_per_level in anchors[im_i]]
                 ious = boxlist_iou(anchors_per_im, targets_per_im)
@@ -366,7 +376,11 @@ class ATSSLoss(object):
                 anchors_to_gt_values, anchors_to_gt_indexs = ious_inf.max(dim=1)
                 cls_labels_per_im = labels_per_im[anchors_to_gt_indexs]
                 cls_labels_per_im[anchors_to_gt_values == -INF] = 0
+
                 matched_gts = bboxes_per_im[anchors_to_gt_indexs]
+
+                # for mixup, weight loss
+                matched_gts_weight = weights_per_im[anchors_to_gt_indexs]
             elif self.positive_type == 'TOPK':
                 gt_cx = (bboxes_per_im[:, 2] + bboxes_per_im[:, 0]) / 2.0
                 gt_cy = (bboxes_per_im[:, 3] + bboxes_per_im[:, 1]) / 2.0
@@ -396,6 +410,8 @@ class ATSSLoss(object):
                 cls_labels_per_im = labels_per_im[anchors_to_gt_indexs]
                 cls_labels_per_im[anchors_to_gt_values == -INF] = 0
                 matched_gts = bboxes_per_im[anchors_to_gt_indexs]
+                # for mixup, weight loss
+                matched_gts_weight = weights_per_im[anchors_to_gt_indexs]
             elif self.positive_type == 'IoU':
                 match_quality_matrix = boxlist_iou(targets_per_im, anchors_per_im)
                 matched_idxs = self.matcher(match_quality_matrix)
@@ -415,6 +431,9 @@ class ATSSLoss(object):
 
                 matched_gts = matched_targets.bbox
 
+                # for mixup, weight loss
+                matched_gts_weight = weights_per_im[matched_idxs.clamp(min=0)]
+
                 # Limiting positive samples’ center to object
                 # in order to filter out poor positives and use the centerness branch
                 pos_idxs = torch.nonzero(cls_labels_per_im > 0).squeeze(1)
@@ -433,7 +452,9 @@ class ATSSLoss(object):
             cls_labels.append(cls_labels_per_im)
             reg_targets.append(reg_targets_per_im)
 
-        return cls_labels, reg_targets
+            weights_label.append(matched_gts_weight)
+
+        return cls_labels, reg_targets, weights_label
 
     def compute_centerness_targets(self, reg_targets, anchors):
         gts = self.box_coder.decode(reg_targets, anchors)
@@ -451,7 +472,7 @@ class ATSSLoss(object):
         return centerness
 
     def __call__(self, box_cls, box_regression, centerness, targets, anchors):
-        labels, reg_targets = self.prepare_targets(targets, anchors)
+        labels, reg_targets, weights_label = self.prepare_targets(targets, anchors)
 
         N = len(labels)
         box_cls_flatten, box_regression_flatten = concat_box_prediction_layers(box_cls, box_regression)
@@ -460,6 +481,9 @@ class ATSSLoss(object):
 
         labels_flatten = torch.cat(labels, dim=0)
         reg_targets_flatten = torch.cat(reg_targets, dim=0)
+
+        weights_label_flatten = torch.cat(weights_label,dim=0)
+
         anchors_flatten = torch.cat([cat_boxlist(anchors_per_image).bbox for anchors_per_image in anchors], dim=0)
 
         pos_inds = torch.nonzero(labels_flatten > 0).squeeze(1)
@@ -474,12 +498,18 @@ class ATSSLoss(object):
             box_regression_flatten = box_regression_flatten[pos_inds]
             reg_targets_flatten = reg_targets_flatten[pos_inds]
             anchors_flatten = anchors_flatten[pos_inds]
+
+            weights_label_flatten = weights_label_flatten[pos_inds]
+
             centerness_flatten = centerness_flatten[pos_inds]
             centerness_targets = self.compute_centerness_targets(reg_targets_flatten, anchors_flatten)
 
             sum_centerness_targets_avg_per_gpu = reduce_sum(centerness_targets.sum()).item() / float(num_gpus)
+
+            # attenstion here
             reg_loss = self.GIoULoss(box_regression_flatten, reg_targets_flatten, anchors_flatten,
-                                     weight=centerness_targets) / sum_centerness_targets_avg_per_gpu
+                                     weight=centerness_targets*weights_label_flatten) / sum_centerness_targets_avg_per_gpu
+            
             centerness_loss = self.centerness_loss_func(centerness_flatten, centerness_targets) / num_pos_avg_per_gpu
         else:
             reg_loss = box_regression_flatten.sum()
