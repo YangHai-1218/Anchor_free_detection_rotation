@@ -403,7 +403,9 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
         self.box_selector_test = ATSSPostProcessor(
             config.inference_th, config.pre_nms_top_n,
             config.nms_threshold, config.detections_per_img,
-            config.min_size, config.n_class, box_coder
+            config.min_size, config.n_class, box_coder,
+            config.voting_enable,config.multi_scale_test,
+            config.voting_threshold,
         )
         self.anchor_generator = make_anchor_generator_atss(
             config.anchor_sizes, config.anchor_strides
@@ -425,6 +427,7 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
         else:
             if val_withloss:
                 _,losses = self._forward_train(box_cls, box_regression, centerness, targets, anchors)
+
             boxes,_ = self._forward_test(box_cls, box_regression, centerness, anchors)
             if val_withloss:
                 return boxes,losses

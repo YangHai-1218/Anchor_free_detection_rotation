@@ -25,6 +25,8 @@ def has_valid_annotation(annot):
 
 class COCODataset(datasets.CocoDetection):
     def __init__(self, path, split, transform=None):
+        self.split = split
+        '''split: train, val, test'''
         root = os.path.join(path, f'{split}2017')
         if split == 'val_loss':
             annot = os.path.join(path, 'annotations', f'instances_val2017.json')
@@ -86,6 +88,11 @@ class COCODataset(datasets.CocoDetection):
         img_data = self.coco.imgs[id]
 
         return img_data
+
+
+
+
+
 
 
 class ImageList:

@@ -14,9 +14,10 @@ class ATSSPostProcessor(nn.Module):
         min_size,
         num_classes,
         box_coder,
+        bbox_aug_vote=False,
+        multi_scale_test=True,
         bbox_voting_threshold=0,
         bbox_aug_enabled=False,
-        bbox_aug_vote=False
     ):
         super(ATSSPostProcessor, self).__init__()
         self.pre_nms_thresh = pre_nms_thresh
@@ -29,6 +30,7 @@ class ATSSPostProcessor(nn.Module):
         self.box_coder = box_coder
         self.bbox_aug_vote = bbox_aug_vote
         self.bbox_voting_threshold = bbox_voting_threshold
+        self.multi_scale_test = multi_scale_test
 
     def forward_for_single_feature_map(self, box_cls, box_regression, centerness, anchors):
         '''
@@ -126,6 +128,11 @@ class ATSSPostProcessor(nn.Module):
 
         boxlists = list(zip(*sampled_boxes))
         boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
+
+        if self.multi_scale_test:
+            # if use the multi_scale_test, don't apply nms in this stage
+            return boxlists
+
         if not self.bbox_aug_vote:
             boxlists = self.select_over_all_levels(boxlists)
         else:
@@ -142,8 +149,10 @@ class ATSSPostProcessor(nn.Module):
         results = []
         for i in range(num_images):
             # multiclass nms
-            origin_result = boxlists[i]
+
+
             nms_result = boxlist_ml_nms(boxlists[i], self.nms_thresh)
+
             number_of_detections = len(nms_result)
 
             # Limit to max_per_image detections **over all classes**

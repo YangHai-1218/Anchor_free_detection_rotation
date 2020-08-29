@@ -2,9 +2,12 @@ import torch
 from pycocotools import coco,cocoeval
 import numpy as np
 import json
-from utils.boxlist import BoxList,boxlist_ml_nms
+from utils.boxlist import BoxList,boxlist_ml_nms,cat_boxlist
 from collections import defaultdict
-
+import os
+import cv2
+from utils.transform import ToTensor,RandomHorizontalFlip
+from evaluate import map_to_origin_image
 '''
 Attention: this test_augemntion pipeline is post prcocess, base on the coco result json format
 '''
@@ -100,6 +103,7 @@ class Multi_Scale_Augment:
     '''
     scale-aware for multi scale testing
     https://arxiv.org/abs/2008.01365
+    this method can perform multi_scale_augment offline by using the coco format result json file
     '''
     def __init__(self,weight,object_size_threshold,nms_threshold):
         '''
@@ -177,6 +181,109 @@ class Multi_Scale_Augment:
 
         with open('ensbmble.json') as f:
             json.dump(nms_result, f)
+
+
+
+class Multi_Scale_Test:
+    def __init__(self,dataset,
+                 scale,
+                 weight,
+                 object_size_threshold,
+                 nms_threshold,
+                 fpn_post_nms_top_n,
+                 flip_enable=False,
+                 bbox_aug_vote = False,
+                 bbox_voting_threshold=0,):
+        """
+        scale : list[tuple] , (width,height), inference on every fixed scale
+        weight: list[list] , [small_object_weight,medium_object_weight,larget_object_weight], for every scale,
+                the correspoding weight for different size objects
+        object_size_threshold: list [small_object_max_size, larget_object_min_size]
+        dataset : dataset object
+        flip_enable: for every scale, perform flip_augmenation
+        nms_threshold: the threshold for nms_threshold
+        fpn_post_nms_top_n : after nms , keep n bbox with highest bbox
+        flip_enable: for every scale , also perform inference on fliped image
+        bbox_aug_vote: enable bbox voting
+        bbox_voting_threshold: the threshold for voting , use the bbox weith IOU>this threshold to refine bbox
+        """
+        self.scale = scale
+        assert len(scale) == len(weight) , "scale num == weight num"
+        self.weights = np.array(weight)
+        self.small_object_threshold = object_size_threshold[0]
+        self.large_object_threshold = object_size_threshold[1]
+        self.dataset = dataset
+        self.flip = flip_enable
+        self.nms_threshold = nms_threshold
+        self.fpn_post_nms_top_n = fpn_post_nms_top_n
+        self.bbox_aug_vote = bbox_aug_vote
+        self.bbox_voting_threshold = bbox_voting_threshold
+
+
+    def weight_score(self,weight,pred):
+        scores = pred.get_field("scores")
+        area = pred.area()
+
+        # weight score
+        small_object_index = area < self.small_object_threshold
+        scores[small_object_index] *= weight[0]
+        medium_object_index = self.small_object_threshold <= area and area < self.large_object_threshold
+        scores[medium_object_index] *= weight[1]
+        large_object_inedx = area >= self.large_object_threshold
+        scores[large_object_inedx] *= weight[2]
+        pred.add_field("scores", scores)
+        return pred
+
+    def __call__(self, model,images,indexs):
+        # TODO VOTING
+        for index in indexs:
+            image_meta = self.dataset.get_image_meta(index)
+            image_path = image_meta['file_name']
+            image_path = os.path.join(self.dataset.root, image_path)
+            image_origin = cv2.imread(image_path)
+
+            preds = []
+            for i,scale in enumerate(self.scales):
+                image_resized = cv2.resize(image_origin,scale,interpolation=cv2.INTER_LINEAR)
+                image_resized_tensor = ToTensor()(image_resized,None)
+                pred, _ = model(image_resized_tensor)
+                pred = map_to_origin_image(image_meta,pred)
+                pred = self.weight_score(self.weights[i],pred)
+                preds.append(pred)
+
+                # Horizontal flip augment
+                image_resized_fliped = RandomHorizontalFlip(p=1)(image_resized,None)
+                image_resized_fliped_tensor = ToTensor()(image_resized_fliped)
+                pred, _ = model(image_resized_fliped_tensor)
+                pred = map_to_origin_image(image_meta,pred,flipmode='h')
+                pred = self.weight_score(self.weights[i],pred)
+                preds.append(pred)
+
+
+
+            preds = cat_boxlist(preds)
+
+            preds_nms = boxlist_ml_nms(preds,self.nms_threshold)
+            number_of_detections = len(preds_nms)
+
+            # Limit to max_per_image detections **over all classes**
+            if number_of_detections > self.fpn_post_nms_top_n > 0:
+                cls_scores = preds_nms.get_field("scores")
+                image_thresh, _ = torch.kthvalue(
+                    cls_scores.cpu(),
+                    number_of_detections - self.fpn_post_nms_top_n + 1
+                )
+                keep = cls_scores >= image_thresh.item()
+                keep = torch.nonzero(keep).squeeze(1)
+                preds_nms = preds_nms[keep]
+        return preds_nms
+
+
+
+
+
+
+
 
 
 

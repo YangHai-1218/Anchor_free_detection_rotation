@@ -72,39 +72,13 @@ def make_coco_detection(predictions, dataset):
             continue
 
         img_meta = dataset.get_image_meta(id)
-        width = img_meta['width']
-        height = img_meta['height']
 
+        pred_resize = map_to_origin_image(img_meta,pred,mode='letterbox')
 
-
-        resized_width,resized_height = pred.size
-
-        if width>height:
-            scale = resized_width/width
-            size = (resized_width,int(scale*height))
-        else:
-            scale = resized_height/height
-            size = (int(width*scale),resized_height)
-
-        #mask = (pred.bbox[2]>size[0]) & (pred.bbox[3]>size[1])
-        #print(mask)
-
-        # for letterbox reisze
-        pred_resize = BoxList(pred.bbox,size,mode='xyxy')
-        pred_resize._copy_extra_fields(pred)
-        pred_resize = pred_resize.clip_to_image(remove_empty=True)
-        pred_resize = pred_resize.resize((width,height))
-        pred_resize = pred_resize.convert('xywh')
         boxes = pred_resize.bbox.tolist()
         scores = pred_resize.get_field('scores').tolist()
         labels = pred_resize.get_field('labels').tolist()
 
-        # pred = pred.resize((width, height))
-        # pred = pred.convert('xywh')
-        #
-        # boxes = pred.bbox.tolist()
-        # scores = pred.get_field('scores').tolist()
-        # labels = pred.get_field('labels').tolist()
 
         labels = [dataset.id2category[i] for i in labels]
 
@@ -164,3 +138,52 @@ class COCOResult:
 
     def __repr__(self):
         return repr(self.results)
+
+
+def map_to_origin_image(img_meta,pred,flipmode='no',resize_mode='letterbox'):
+    '''
+    img_meta: "id": int, "width": int, "height": int,"file_name": str,
+    pred: boxlist object
+    resize_mode: 'letterbox' , 'wrap'
+    '''
+
+
+    if flipmode == 'h':
+        pred = pred.transpose(0)
+    elif flipmode == 'v':
+        pred = pred.transpose(1)
+    elif flipmode == 'no':
+        pass
+    else:
+        raise Exception("unspported flip mode, 'h', 'v' or 'no' ")
+
+    width = img_meta['width']
+    height = img_meta['height']
+
+    resized_width, resized_height = pred.size
+
+    if resize_mode == 'letterbox':
+        if width > height:
+            scale = resized_width / width
+            size = (resized_width, int(scale * height))
+        else:
+            scale = resized_height / height
+            size = (int(width * scale), resized_height)
+
+        pred_resize = BoxList(pred.bbox, size, mode='xyxy')
+        pred_resize._copy_extra_fields(pred)
+        pred_resize = pred_resize.clip_to_image(remove_empty=True)
+        pred_resize = pred_resize.resize((width, height))
+        pred_resize = pred_resize.convert('xywh')
+
+    elif resize_mode == 'wrap':
+        pred_resize = pred.resize((width, height))
+        pred_resize = pred_resize.convert('xywh')
+        pred_resize = pred_resize.clip_to_image(remove_empty=True)
+
+    else:
+        raise Exception("unspported reisze mode, either 'letterbox' or 'wrap' ")
+
+
+    return pred_resize
+
