@@ -12,6 +12,7 @@ Supported methods:
 - [x] Schedluer: warmup, cosine, linear, step, exp
 - [x] Ensemble https://arxiv.org/abs/2008.01365
 - [x] EMA
+- [x] Multi-scale-test
 
 
 
