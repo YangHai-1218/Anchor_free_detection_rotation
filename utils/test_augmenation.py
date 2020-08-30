@@ -236,6 +236,7 @@ class Multi_Scale_Test:
 
     def __call__(self, model,images,indexs):
         # TODO VOTING
+        result = []
         for index in indexs:
             image_meta = self.dataset.get_image_meta(index)
             image_path = image_meta['file_name']
@@ -246,7 +247,7 @@ class Multi_Scale_Test:
             for i,scale in enumerate(self.scales):
                 image_resized = cv2.resize(image_origin,scale,interpolation=cv2.INTER_LINEAR)
                 image_resized_tensor = ToTensor()(image_resized,None)
-                pred, _ = model(image_resized_tensor)
+                [pred], _ = model(image_resized_tensor)
                 pred = map_to_origin_image(image_meta,pred)
                 pred = self.weight_score(self.weights[i],pred)
                 preds.append(pred)
@@ -254,7 +255,7 @@ class Multi_Scale_Test:
                 # Horizontal flip augment
                 image_resized_fliped = RandomHorizontalFlip(p=1)(image_resized,None)
                 image_resized_fliped_tensor = ToTensor()(image_resized_fliped)
-                pred, _ = model(image_resized_fliped_tensor)
+                [pred], _ = model(image_resized_fliped_tensor)
                 pred = map_to_origin_image(image_meta,pred,flipmode='h')
                 pred = self.weight_score(self.weights[i],pred)
                 preds.append(pred)
@@ -276,25 +277,7 @@ class Multi_Scale_Test:
                 keep = cls_scores >= image_thresh.item()
                 keep = torch.nonzero(keep).squeeze(1)
                 preds_nms = preds_nms[keep]
-        return preds_nms
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            result.append(preds_nms)
+        return result
 

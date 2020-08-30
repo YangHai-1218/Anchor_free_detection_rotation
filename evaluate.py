@@ -144,6 +144,7 @@ def map_to_origin_image(img_meta,pred,flipmode='no',resize_mode='letterbox'):
     '''
     img_meta: "id": int, "width": int, "height": int,"file_name": str,
     pred: boxlist object
+    flipmode:'h':Horizontal flip,'v':vertical flip 'no': no flip
     resize_mode: 'letterbox' , 'wrap'
     '''
 

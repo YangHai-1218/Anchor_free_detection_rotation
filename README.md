@@ -13,13 +13,15 @@ Supported methods:
 - [x] Ensemble https://arxiv.org/abs/2008.01365
 - [x] EMA
 - [x] Multi-scale-test
+- [x] GFocal loss
 
 
 
 ToDo
 
-- [ ] GFocal loss
+- [ ] Fix bug
 - [ ] Zoom
+- [ ] Gradient Centralizatio
 
  
 

@@ -415,9 +415,6 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
 
 
         features = self.backbone(images.tensors)
-        if False:
-            for feature in features:
-                print(feature.shape)
 
         box_cls, box_regression, centerness = self.head(features)
         anchors = self.anchor_generator(images, features)
@@ -448,5 +445,7 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
     def _forward_test(self, box_cls, box_regression, centerness, anchors):
         boxes = self.box_selector_test(box_cls, box_regression, centerness, anchors)
         return boxes, {}
+
+
 
 

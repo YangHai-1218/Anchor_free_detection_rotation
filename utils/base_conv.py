@@ -127,3 +127,11 @@ class MaxPool2dStaticSamePadding(nn.Module):
         return x
 
 
+class Scale(nn.Module):
+    def __init__(self, init_value=1.0):
+        super().__init__()
+
+        self.scale = nn.Parameter(torch.tensor([init_value], dtype=torch.float32))
+
+    def forward(self, input):
+        return input * self.scale

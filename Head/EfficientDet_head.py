@@ -58,7 +58,7 @@ class Regressor(nn.Module):
     def __init__(self, in_channels, num_anchors, num_layers, with_centerness=True,onnx_export=False):
         super(Regressor, self).__init__()
         self.num_layers = num_layers
-        self.num_layers = num_layers
+
         self.with_centerness = with_centerness
 
         self.conv_list = nn.ModuleList(
