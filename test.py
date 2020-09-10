@@ -5,7 +5,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from argument import get_args
-from utils.dataset import COCODataset, collate_fn
+from utils.dataset import COCODataset, collate_fn,DIORdataset
 from model import Efficientnet_Bifpn_ATSS
 from utils import transform
 from distributed import (
@@ -13,10 +13,10 @@ from distributed import (
     synchronize,
 )
 from train import (
-    valid,
     data_sampler,
 )
-from utils.coco_meta import CLASS_NAME
+from utils.trainer import Tester
+# from utils.coco_meta import CLASS_NAME
 from visualize import show_bbox
 
 def save_predictions_to_images(dataset, predictions):
@@ -75,15 +75,22 @@ if __name__ == '__main__':
     #         transform.Normalize(args.pixel_mean, args.pixel_std)
     #     ]
     # )
-    valid_trans = transform.Compose(
+    test_set = DIORdataset(args.path, 'val')
+    test_trans = transform.Compose(
         [
             transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
             transform.ToTensor(),
             transform.Normalize(args.pixel_mean, args.pixel_std)
         ]
     )
-
-    valid_set = COCODataset("data/coco2017/", 'val', valid_trans)
+    test_set.set_transform(test_trans)
+    valid_loader = DataLoader(
+        test_set,
+        batch_size=args.batch,
+        sampler=data_sampler(test_set, shuffle=False, distributed=args.distributed),
+        num_workers=args.num_workers,
+        collate_fn=collate_fn(args),
+    )
 
     # backbone = vovnet39(pretrained=False)
     # backbone = resnet18(pretrained=False)
@@ -107,15 +114,9 @@ if __name__ == '__main__':
             broadcast_buffers=False,
         )
 
-    valid_loader = DataLoader(
-        valid_set,
-        batch_size=args.batch,
-        sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
-        num_workers=args.num_workers,
-        collate_fn=collate_fn(args),
-    )
 
-    predictions = valid(args, 0, valid_loader, valid_set, model, device)
+    tester = Tester(args,valid_loader,test_set,device)
+    predictions = tester(model,1)
     #save_predictions_to_images(valid_set, predictions)
 
 

@@ -5,45 +5,23 @@ from tqdm import tqdm
 
 from argument import get_args
 from backbone import vovnet39, vovnet57, resnet50, resnet101
-from utils.dataset import COCODataset, collate_fn
+from utils.dataset import COCODataset, collate_fn, DIORdataset
 from model import ATSS,Efficientnet_Bifpn_ATSS
 from utils import transform
 from utils.lrscheduler import GluonLRScheduler,iter_per_epoch_cal,set_schduler_with_wormup
-from evaluate import evaluate
 from distributed import (
     get_rank,
     synchronize,
     reduce_loss_dict,
     DistributedSampler,
-    all_gather,
     get_world_size,
-    convert_sync_bn,
-    simple_group_split
 )
 from utils.ema import EMA
-import os,cv2
+import os, cv2
 from tensorboardX import SummaryWriter
 import numpy as np
+from utils.trainer import Trainer,Tester
 
-def accumulate_predictions(predictions):
-    all_predictions = all_gather(predictions)
-
-    if get_rank() != 0:
-        return
-
-    predictions = {}
-
-    for p in all_predictions:
-        predictions.update(p)
-
-    ids = list(sorted(predictions.keys()))
-
-    if len(ids) != ids[-1] + 1:
-        print('Evaluation results is not contiguous')
-
-    predictions = [predictions[i] for i in ids]
-
-    return predictions
 
 
 @torch.no_grad()
@@ -93,120 +71,8 @@ def valid_loss(args, epoch, loader, dataset, model, device, logger=None):
     return loss_all
 
 
-@torch.no_grad()
-def valid(args, epoch, loader, dataset, model, device, logger=None,ema=None):
-
-    if args.distributed:
-        model = model.module
-
-    torch.cuda.empty_cache()
-
-    model.eval()
-
-    if get_rank() == 0:
-        pbar = tqdm(enumerate(loader), total=len(loader), dynamic_ncols=True)
-    else:
-        pbar = enumerate(loader)
-
-    preds = {}
-
-    for idx, (images, targets, ids) in pbar:
-        model.zero_grad()
-
-        images = images.to(device)
-
-        if ema: ema.apply_shadow()
-        pred, _ = model(images)
-        if ema: ema.restore()
-
-        pred = [p.to('cpu') for p in pred]
-
-        preds.update({id: p for id, p in zip(ids, pred)})
 
 
-    preds = accumulate_predictions(preds)
-
-    if get_rank() != 0:
-        return
-
-    evl_res = evaluate(dataset, preds)
-
-    # writing log to tensorboard
-    if logger:
-        log_group_name = "validation"
-        box_result = evl_res['bbox']
-        logger.add_scalar(log_group_name + '/AP', box_result['AP'], epoch)
-        logger.add_scalar(log_group_name + '/AP50', box_result['AP50'], epoch)
-        logger.add_scalar(log_group_name + '/AP75', box_result['AP75'], epoch)
-        logger.add_scalar(log_group_name + '/APl', box_result['APl'], epoch)
-        logger.add_scalar(log_group_name + '/APm', box_result['APm'], epoch)
-        logger.add_scalar(log_group_name + '/APs', box_result['APs'], epoch)
-
-    return preds
-
-def train(args, epoch, loader, model, optimizer, device, scheduler=None,logger=None,ema=None):
-    epoch_loss = []
-    model.train()
-    scheduler, warmup_scheduler = scheduler[0], scheduler[1]
-    if get_rank() == 0:
-        pbar = tqdm(enumerate(loader), total=len(loader), dynamic_ncols=True)
-    else:
-        pbar = enumerate(loader)
-
-    for idx, (images, targets, _) in pbar:
-
-        model.zero_grad()
-
-        images = images.to(device)
-        targets = [target.to(device) for target in targets]
-
-
-        _, loss_dict = model(images, targets=targets)
-        loss_cls = loss_dict['loss_cls'].mean()
-        loss_box = loss_dict['loss_reg'].mean()
-        loss_center = loss_dict['loss_centerness'].mean()
-
-        loss = loss_cls + loss_box + loss_center
-
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 10)
-        optimizer.step()
-        # ema update
-        ema.update()
-
-        # for iter scheduler
-        if idx<warmup_scheduler.niters and epoch<args.warmup_epoch:
-            warmup_scheduler.step()
-        else:
-            scheduler.step()
-
-        loss_reduced = reduce_loss_dict(loss_dict)
-        loss_cls = loss_reduced['loss_cls'].mean().item()
-        loss_box = loss_reduced['loss_reg'].mean().item()
-        loss_center = loss_reduced['loss_centerness'].mean().item()
-
-        if get_rank() == 0:
-            pbar.set_description(
-                (
-                    f'epoch: {epoch + 1}; cls: {loss_cls:.4f}; '
-                    f'box: {loss_box:.4f}; center: {loss_center:.4f}'
-                )
-            )
-
-            # writing log to tensorboard
-            if logger and idx % 50 == 0:
-                lr_rate = optimizer.param_groups[0]['lr']
-                totalStep = (epoch * len(loader) + idx) * args.batch * args.n_gpu
-                logger.add_scalar('training/loss_cls', loss_cls, totalStep)
-                logger.add_scalar('training/loss_box', loss_box, totalStep)
-                logger.add_scalar('training/loss_center', loss_center, totalStep)
-                logger.add_scalar('training/loss_all', (loss_cls + loss_box + loss_center), totalStep)
-                logger.add_scalar('learning_rate',lr_rate,totalStep)
-
-        epoch_loss.append(float(loss_cls+loss_box+loss_center))
-    if logger:
-        logger.add_scalar('training/loss_epoch_all',np.mean(epoch_loss),epoch)
-    return epoch_loss
 
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
@@ -222,10 +88,16 @@ def data_sampler(dataset, shuffle, distributed):
 
 def save_checkpoint(model,args,optimizer,epoch):
     if get_rank() == 0:
-        torch.save(
-            {'model': model.module.state_dict(), 'optim': optimizer.state_dict()},
-            args.working_dir + f'/epoch-{epoch + 1}.pt',
-        )
+        if args.distributed:
+            torch.save(
+                {'model': model.module.state_dict(), 'optim': optimizer.state_dict()},
+                args.working_dir + f'/epoch-{epoch + 1}.pt',
+            )
+        else:
+            torch.save(
+                {'model': model.state_dict(), 'optim': optimizer.state_dict()},
+                args.working_dir + f'/epoch-{epoch + 1}.pt',
+            )
 
 
 if __name__ == '__main__':
@@ -253,44 +125,35 @@ if __name__ == '__main__':
 
     device = 'cuda'
 
-    # train_trans = transform.Compose(
-    #     [
-    #         transform.RandomResize(args.train_min_size_range, args.train_max_size),
-    #         transform.RandomHorizontalFlip(0.5),
-    #         transform.ToTensor(),
-    #         transform.Normalize(args.pixel_mean, args.pixel_std)
-    #     ]
-    # )
-
-
-    # for efficientdet resize the image
+    train_set = DIORdataset(args.path, 'train')
     train_trans = transform.Compose(
         [
             transform.RandomHorizontalFlip(0.5),
-            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
+            # transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
+            transform.RandomMixUp(dataset=train_set),
+            transform.Multi_Scale_with_Crop(scales=[640, 960, 1280], target_size=(640, 640)),
             transform.ToTensor(),
             transform.Normalize(args.pixel_mean, args.pixel_std),
         ]
     )
-
-    valid_trans = transform.Compose(
-        [
-            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
-            transform.ToTensor(), 
-            transform.Normalize(args.pixel_mean, args.pixel_std)
-        ]
-    )
-
-    train_set = COCODataset(args.path, 'train', train_trans)
+    train_set.set_transform(train_trans)
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch,
-        sampler=data_sampler(train_set, shuffle=True, distributed=args.distributed),
+        sampler=data_sampler(train_set, shuffle=False, distributed=args.distributed),
         num_workers=args.num_workers,
         collate_fn=collate_fn(args),
     )
 
-    valid_set = COCODataset(args.path, 'val', valid_trans)
+    valid_set = DIORdataset(args.path, 'val')
+    valid_trans = transform.Compose(
+        [
+            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
+            transform.ToTensor(),
+            transform.Normalize(args.pixel_mean, args.pixel_std)
+        ]
+    )
+    valid_set.set_transform(valid_trans)
     valid_loader = DataLoader(
         valid_set,
         batch_size=args.batch,
@@ -414,13 +277,6 @@ if __name__ == '__main__':
     ema = EMA(model,decay=0.999,enable=args.EMA)
 
     if args.distributed:
-        # if args.batch <= 4:
-        #     #if the batchsize for a single GPU <= 4, then use the sync_batchnorm
-        #     world_size = get_world_size()
-        #     rank = get_rank()
-        #     sync_groups = world_size // args.n_gpu
-        #     process_group = simple_group_split(world_size, rank, sync_groups)
-        #     convert_sync_bn(model, process_group)
         model = nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.local_rank],
@@ -428,22 +284,9 @@ if __name__ == '__main__':
             broadcast_buffers=False,
         )
 
+    trainer = Trainer(args,train_loader,device)
+    valider = Tester(args,valid_loader,valid_set,device)
 
-
-    train_loader = DataLoader(
-        train_set,
-        batch_size=args.batch,
-        sampler=data_sampler(train_set, shuffle=True, distributed=args.distributed),
-        num_workers=args.num_workers,
-        collate_fn=collate_fn(args),
-    )
-    valid_loader = DataLoader(
-        valid_set,
-        batch_size=args.batch,
-        sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
-        num_workers=args.num_workers,
-        collate_fn=collate_fn(args),
-    )
     print(f'[INFO] Start training: learning rate:{args.lr}, total batchsize:{args.batch*get_world_size()}, '
           f'working dir:{args.working_dir}')
 
@@ -461,24 +304,23 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        epoch_loss = train(args, epoch, train_loader, model, optimizer, device, [scheduler,warmup_scheduler],
-                           logger=logger,ema=ema)
+        epoch_loss = trainer(model,epoch,optimizer,[scheduler,warmup_scheduler],logger,ema)
 
         save_checkpoint(model,args,optimizer,epoch)
 
-        valid(args, epoch, valid_loader, valid_set, model, device, logger=logger,ema=None)
+        valider(model,epoch,logger,ema)
 
-        if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
-            val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)
-
-            if args.early_stopping :
-                if val_epoch_loss < val_best_loss:
-                    val_best_loss = val_epoch_loss
-                    val_best_epoch = epoch
-
-                if epoch - val_best_epoch > args.es_patience:
-                    print(f'[INFO]Stop training at epoch {epoch}. The lowest validation loss achieved is {val_best_loss}')
-                    save_checkpoint(model,args,optimizer,epoch)
+        # if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
+        #     val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)
+        #
+        #     if args.early_stopping :
+        #         if val_epoch_loss < val_best_loss:
+        #             val_best_loss = val_epoch_loss
+        #             val_best_epoch = epoch
+        #
+        #         if epoch - val_best_epoch > args.es_patience:
+        #             print(f'[INFO]Stop training at epoch {epoch}. The lowest validation loss achieved is {val_best_loss}')
+        #             save_checkpoint(model,args,optimizer,epoch)
 
 
 

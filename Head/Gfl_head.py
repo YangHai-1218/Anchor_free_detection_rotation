@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from utils.base_conv import Scale
 import torch.nn.functional as F
-from loss import GIoULoss,SigmoidFocalLoss,concat_box_prediction_layers,get_num_gpus,reduce_sum,permute_and_flatten
+from utils.loss import GIoULoss, concat_box_prediction_layers,get_num_gpus,reduce_sum,permute_and_flatten
 from utils.assigner import Assigner
 from utils.boxlist import cat_boxlist,boxlist_iou,BoxList
 
@@ -28,14 +28,18 @@ class Integral(nn.Module):
         """Forward feature from the regression head to get integral result of
         bounding box location.
         Args:
-            x (Tensor): Features of the regression head, shape (N, 4*(n+1)),
+            x (Tensor): Features of the regression head, shape (N, 4*(n+1),H,W),
                 n is self.reg_max.
         Returns:
             x (Tensor): Integral result of box locations, i.e., distance
-                offsets from the box center in four directions, shape (N, 4).
+                offsets from the box center in four directions, shape (N, 4,H,W).
         """
+
+        N,C,H,W = x.shape
+        x = permute_and_flatten(x,N,1,C,H,W)
         x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
         x = F.linear(x, self.project.type_as(x)).reshape(-1, 4)
+        x = x.reshape(N,-1,H,W)
         return x
 
 
@@ -48,14 +52,16 @@ class Gfl_head(nn.Module):
         n_class(int):  number of categories excluding the background category.
         n_conv(int):  Number of conv layers in cls and reg tower.
     """
-    def __init__(self,in_channels, n_class, n_conv, num_anchors):
+    def __init__(self,in_channels, n_class, n_conv, num_anchors=1,reg_max=16):
 
         super(Gfl_head,self).__init__()
+        assert num_anchors == 1,"only support free anchor"
 
         self.in_channels = in_channels
         self.n_class = n_class - 1
         self.n_conv = n_conv
         self.num_anchors = num_anchors
+        self.integral = Integral(reg_max)
 
 
         cls_tower = []
@@ -122,7 +128,7 @@ class Gfl_head(nn.Module):
             x list(tensor) tensor shape (N,in_channels,H,W)  Features from the upstream network
         output:
             cls_score list(tensor): tensor shape (N,class_num,H,W)
-            bbox_reg list(tensor) : tensor shape (N,4*(reg_max+1),H,W) N is the batch size
+            bbox_reg list(tensor) : tensor shape (N,4,H,W) N is the batch size
         '''
 
         cls_score = []
@@ -132,9 +138,13 @@ class Gfl_head(nn.Module):
             box_tower = self.bbox_tower(feature)
             cls_score.append(self.gfl_cls(cls_tower))
             bbox_pred = self.scales[l](self.gfl_reg(box_tower))
+            bbox_pred = self.integral(bbox_pred)
             bbox_reg.append(bbox_pred)
 
         return cls_score,bbox_reg
+
+
+
 
 
 class Gfl_Loss:
@@ -219,6 +229,29 @@ class Gfl_Loss:
         loss = loss.sum()
         return loss
 
+    def distribution_focal_loss(pred, label):
+        r"""Distribution Focal Loss (DFL) is from `Generalized Focal Loss: Learning
+        Qualified and Distributed Bounding Boxes for Dense Object Detection
+        <https://arxiv.org/abs/2006.04388>`_.
+        Args:
+            pred (torch.Tensor): Predicted general distribution of bounding boxes
+                (before softmax) with shape (N, n+1), n is the max value of the
+                integral set `{0, ..., n}` in paper.
+            label (torch.Tensor): Target distance label for bounding boxes with
+                shape (N,).
+        Returns:
+            torch.Tensor: Loss tensor with shape (N,).
+        """
+        dis_left = label.long()
+        dis_right = dis_left + 1
+        weight_left = dis_right.float() - label
+        weight_right = label - dis_left.float()
+        loss = F.cross_entropy(pred, dis_left, reduction='none') * weight_left \
+               + F.cross_entropy(pred, dis_right, reduction='none') * weight_right
+        return
+
+
+
     def __call__(self, box_cls, box_regression, targets, anchors):
         '''
             box_cls: list(tensor) tensor shape (N,class_num,H,W)  N is the batchsize,
@@ -249,7 +282,8 @@ class Gfl_Loss:
         total_num_pos = reduce_sum(pos_inds.new_tensor([pos_inds.numel()])).item()
         num_pos_avg_per_gpu = max(total_num_pos / float(num_gpus), 1.0)
 
-        cls_loss = self.quality_focal_loss(box_cls_flatten,[labels,labels_iou],beta=2.0) / num_pos_avg_per_gpu
+        cls_loss = self.quality_focal_loss(box_cls_flatten,[labels_flatten,labels_iou_flatten],beta=2.0) \
+                   / num_pos_avg_per_gpu
 
         if pos_inds.numel() > 0:
             box_regression_flatten = box_regression_flatten[pos_inds]
@@ -275,7 +309,9 @@ class Gfl_Loss:
         return cls_loss,  reg_loss
 
 
-
-
-
-
+def test():
+    integral = Integral(1)
+    a = torch.ones((3,8,3,3))
+    b = integral(a)
+    print(b[0,:,0,0])
+    print(b.shape)

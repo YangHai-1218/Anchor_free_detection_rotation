@@ -4,22 +4,61 @@ import json
 import xml.dom.minidom
 import xml.etree.ElementTree as ET
 
-data_dir = '../03data/DIOR' #根目录文件，其中包含image文件夹和box文件夹（根据自己的情况修改这个路径）
 
-image_file_dir = os.path.join(data_dir, 'image')
-xml_file_dir = os.path.join(data_dir, 'box')
+
+CLASS_NAME=[
+    '__background__',
+    'golffield',
+    'Expressway-toll-station',
+    'vehicle',
+    'trainstation',
+    'chimney',
+    'storagetank',
+    'ship',
+    'harbor',
+    'airplane',
+    'groundtrackfield',
+    'tenniscourt',
+    'dam',
+    'basketballcourt',
+    'Expressway-Service-area',
+    'stadium',
+    'airport',
+    'baseballfield',
+    'bridge',
+    'windmill',
+    'overpass',
+]
+
+
+data_dir = 'E:/01科研/03data/DIOR' #根目录文件，其中包含image文件夹和box文件夹（根据自己的情况修改这个路径）
+
+image_file_dir = os.path.join(data_dir, 'JPEGImages-test')
+xml_file_dir = os.path.join(data_dir, 'Annotations')
+test_path = os.path.join(data_dir,'ImageSets/Main/test.txt')
+
+
 
 annotations_info = {'images': [], 'annotations': [], 'categories': []}
 
-categories_map = {'holothurian': 1, 'echinus': 2, 'scallop': 3, 'starfish': 4}
+categories_map = {class_name:i for i,class_name in enumerate(CLASS_NAME)}
+del categories_map['__background__']
 
 for key in categories_map:
     categoriy_info = {"id":categories_map[key], "name":key}
     annotations_info['categories'].append(categoriy_info)
 
-file_names = [image_file_name.split('.')[0]
-              for image_file_name in os.listdir(image_file_dir)]
+# file_names = [image_file_name.split('.')[0]
+#               for image_file_name in os.listdir(image_file_dir)]
 ann_id = 1
+
+with open(test_path,'r') as f:
+    file_names = f.readlines()
+
+for i in range(len(file_names)):
+    file_names[i] = file_names[i].strip()
+
+
 for i, file_name in enumerate(file_names):
 
     image_file_name = file_name + '.jpg'
@@ -32,14 +71,15 @@ for i, file_name in enumerate(file_names):
     #height, width, _ = image.shape
 
 
-
-    annotations_info['images'].append(image_info)
-
     DOMTree = xml.dom.minidom.parse(xml_file_path)
     collection = DOMTree.documentElement
 
-    height = collection.getElementsByTagName('height')
-    width = collection.getElementsByTagName('width')
+    heights = collection.getElementsByTagName('height')
+    heights =  [height.firstChild.data for height in heights]
+    height = int(heights[0])
+    widths = collection.getElementsByTagName('width')
+    widths = [width.firstChild.data for width in widths]
+    width = int(widths[0])
     image_info = {'file_name': image_file_name, 'id': i + 1,
                   'height': height, 'width': width}
 
@@ -47,6 +87,7 @@ for i, file_name in enumerate(file_names):
 
     names = collection.getElementsByTagName('name')
     names = [name.firstChild.data for name in names]
+
 
     xmins = collection.getElementsByTagName('xmin')
     xmins = [xmin.firstChild.data for xmin in xmins]
@@ -74,12 +115,15 @@ for i, file_name in enumerate(file_names):
             w,h = x2 - x1 + 1,y2 - y1 + 1
             category_id = categories_map[names[j]]
             area = w * h
-            annotation_info = {"id": ann_id, "image_id":image_id, "bbox":[x, y, w, h], "category_id": category_id, "area": area,"iscrowd": 0}
+            annotation_info = {"id": ann_id, "image_id":image_id,
+                               "bbox":[x, y, w, h], "category_id": category_id,
+                               "area": area,"iscrowd": 0}
             annotations_info['annotations'].append(annotation_info)
             ann_id += 1
 
-with  open('./annotations.json', 'w')  as f:
+with  open('./test_annotations.json', 'w')  as f:
     json.dump(annotations_info, f, indent=4)
+
 
 print('---整理后的标注文件---')
 print('所有图片的数量：',  len(annotations_info['images']))

@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
-from utils.boxlist import BoxList, boxlist_ml_nms, remove_small_boxes, cat_boxlist,boxlist_iou
-from loss import permute_and_flatten
+from utils import BoxList, boxlist_ml_rnms, remove_small_boxes, cat_boxlist, boxlist_iou
+from utils.loss import permute_and_flatten
 
 class ATSSPostProcessor(nn.Module):
     def __init__(
@@ -32,10 +32,11 @@ class ATSSPostProcessor(nn.Module):
         self.bbox_voting_threshold = bbox_voting_threshold
         self.multi_scale_test = multi_scale_test
 
-    def forward_for_single_feature_map(self, box_cls, box_regression, centerness, anchors):
+    def forward_for_single_feature_map(self, box_cls, box_regression, centerness, angle, anchors):
         '''
-        use the pre_nms_thresh to filter bbox (cls<pre_nms_thresh)
-        the max number of output bbox for every featuremap is pre_nms_top_n
+        first step: use the pre_nms_thresh to filter bbox (cls<pre_nms_thresh)
+        second step: Select the pre_nms_top_n boxes with the highest score(cls*centerness)
+            in this feature level
         '''
         N, _, H, W = box_cls.shape
         A = box_regression.size(1) // 4  # num_anchor
@@ -51,6 +52,14 @@ class ATSSPostProcessor(nn.Module):
         box_regression = permute_and_flatten(box_regression, N, A, 4, H, W)
         box_regression = box_regression.reshape(N, -1, 4)
 
+        # centerness (N,anchor_feature_map)
+        centerness = permute_and_flatten(centerness, N, A, 1, H, W)
+        centerness = centerness.reshape(N, -1).sigmoid()
+
+        # angle (N,anchor_featuremap,90)
+        box_angle = permute_and_flatten(angle, N, A, 90, H, W)
+        box_angle = angle.reshape(N, -1, 90).softmax(dim=-1)
+
         # filter some anchors using nms_thresh(inference threshold)
         # candidate_inds (N,anchors_feature_map,class_num)
         candidate_inds = box_cls > self.pre_nms_thresh
@@ -60,39 +69,43 @@ class ATSSPostProcessor(nn.Module):
         pre_nms_top_n = pre_nms_top_n.clamp(max=self.pre_nms_top_n)
 
 
-        centerness = permute_and_flatten(centerness, N, A, 1, H, W)
-        centerness = centerness.reshape(N, -1).sigmoid()
+
 
         # multiply the classification scores with centerness scores
         box_cls = box_cls * centerness[:, :, None]
 
         results = []
-        for per_box_cls, per_box_regression, per_pre_nms_top_n, per_candidate_inds, per_anchors \
-                in zip(box_cls, box_regression, pre_nms_top_n, candidate_inds, anchors):
+        for per_box_cls, per_box_regression, per_box_angle, per_pre_nms_top_n, per_candidate_inds, per_anchors \
+                in zip(box_cls, box_regression, box_angle, pre_nms_top_n, candidate_inds, anchors):
             # per_box_cls: (anchors_feature_map,class_num)
             # per_box_regression: (anchors_feature_map,4)
+            # per_box_angle: (anchors_feature_map,90)
             # per_pre_nms_top_n: shape=(1)
             # per_candidate_inds: (anchors_feature_map,class_num) True or False,
             # True means the prediction probability > inference_threshold
 
-            # per_box_cls (n) n is the number of elements > inference_threshold in per_box_cls, the element is the probability
+            # per_box_cls (n) n is the number of elements > inference_threshold in per_box_cls,
+            # the element is the probability
             per_box_cls = per_box_cls[per_candidate_inds]
 
             #
             per_box_cls, top_k_indices = per_box_cls.topk(per_pre_nms_top_n, sorted=False)
 
-            # per_candidate_inds.nonzero()   (n,2) n is equal to per_box_cls.shape[0]
+            # per_candidate_inds.nonzero()
+            # (n,2) n is equal to per_box_cls.shape[0],dim2 include anchor_index and class_index
             per_candidate_nonzeros = per_candidate_inds.nonzero()[top_k_indices, :]
 
             per_box_loc = per_candidate_nonzeros[:, 0]
             per_class = per_candidate_nonzeros[:, 1] + 1
+            _, per_angle = per_box_angle[per_box_loc, :].max(dim=-1)
+            torch.cat([per_box_regression[per_box_loc, :].view(-1, 4),per_angle.view(-1)],dim=-1)
 
             detections = self.box_coder.decode(
-                per_box_regression[per_box_loc, :].view(-1, 4),
-                per_anchors.bbox[per_box_loc, :].view(-1, 4)
+                torch.cat([per_box_regression[per_box_loc, :].view(-1, 4),per_angle.view(-1)], dim=-1),
+                per_anchors.bbox[per_box_loc, :].view(-1, 5)
             )
 
-            boxlist = BoxList(detections, per_anchors.size, mode="xyxy")
+            boxlist = BoxList(detections, per_anchors.size, mode="xywha_d")
             boxlist.add_field("labels", per_class)
             boxlist.add_field("scores", torch.sqrt(per_box_cls))
             boxlist = boxlist.clip_to_image(remove_empty=False)
@@ -102,9 +115,9 @@ class ATSSPostProcessor(nn.Module):
         # results : [image1_featuremapj_predictedbbox,....,imageN_featuremapj_predictedbbox]
         return results
 
-    def forward(self, box_cls, box_regression, centerness, anchors):
+    def forward(self, box_cls, box_regression, centerness, angle, anchors):
         '''
-        params:
+        Args:
         box_cls: model classifier output for every feature map,
                 list [p3_predict, p4_predict,p5_predict,p6_predict,p7_predict]
                 pi_predict: tensor (N,num_anchors,H,W)  N is the batchsize
@@ -113,7 +126,10 @@ class ATSSPostProcessor(nn.Module):
                 pi_predict: tensor (N,num_anchors*4,H,W)
         centerness: model centerness branch ourpur for every feature map
                 list [p3_predict,p4_predict,p5_predict,p6_predict,p7_predict]
-                pi_predict: tensor (N,num_anchors,H,w)
+                pi_predict: tensor (N,num_anchors,H,W)
+        angle: model angle brancg output for every feature map
+                list [p3_predict,p4_predict,p5_predict,p6_predict,p7_predict]
+                pi_predict: tensor (N,num_anchors*90,H,W)
         acnhors: anchor loaction for every image (in the batchsize) and every feature map
                 list [ima1_anchor,...imageN_anchors]
                 imgi_anchor: list[p3_anchors,p4_anchors,p5_anchors,p6_anchors,p7_anchors]
@@ -121,12 +137,13 @@ class ATSSPostProcessor(nn.Module):
         '''
         sampled_boxes = []
         anchors = list(zip(*anchors))
-        for _, (o, b, c, a) in enumerate(zip(box_cls, box_regression, centerness, anchors)):
+        for _, (o, b, c, a, r) in enumerate(zip(box_cls, box_regression, centerness, angle, anchors)):
             sampled_boxes.append(
-                self.forward_for_single_feature_map(o, b, c, a)
+                self.forward_for_single_feature_map(o, b, c, a, r)
             )
 
         boxlists = list(zip(*sampled_boxes))
+        # boxlists list(boxlist) predicted bbox for every image in batch
         boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
 
         if self.multi_scale_test:
@@ -149,7 +166,7 @@ class ATSSPostProcessor(nn.Module):
         results = []
         for i in range(num_images):
             # multiclass nms
-            nms_result = boxlist_ml_nms(boxlists[i], self.nms_thresh)
+            nms_result = boxlist_ml_rnms(boxlists[i], self.nms_thresh)
 
             number_of_detections = len(nms_result)
 
@@ -173,7 +190,7 @@ class ATSSPostProcessor(nn.Module):
         for i in range(num_images):
             # multiclass nms
             origin_result = boxlists[i]
-            nms_result = boxlist_ml_nms(boxlists[i], self.nms_thresh)
+            nms_result = boxlist_ml_rnms(boxlists[i], self.nms_thresh)
             number_of_detections = len(nms_result)
 
             # Limit to max_per_image detections **over all classes**
@@ -194,7 +211,7 @@ class ATSSPostProcessor(nn.Module):
             origin_labels = origin_result.get_field("labels")
             result = []
 
-            for i in self.class_num:
+            for i in range(self.class_num):
                 nms_bbox_class_i = nms_result[nms_labels==(i+1)]
                 origin_bbox_class_i = origin_result[origin_labels==(i+1)]
                 iou = boxlist_iou(nms_bbox_class_i,origin_bbox_class_i)
@@ -204,7 +221,7 @@ class ATSSPostProcessor(nn.Module):
                 scores = origin_bbox_class_i.get_field("scores")
                 scores = keeps.float()*scores
                 bboxs_voted = origin_bbox_class_i.bbox[None,:,:]*scores[:,:,None]
-                bboxs_voted = bboxs_voted.sum(dim=1)/scores.sum(dim=1)
+                bboxs_voted = bboxs_voted.sum(dim=1)/scores.sum(dim=1)[:,None]
                 # bboxs_voted = []
                 # for i,keep in enumerate(keeps):
                 #     keep = keep.nonzero()
@@ -225,7 +242,7 @@ class ATSSPostProcessor(nn.Module):
         return results
 
 
-class Gfl_Post_Processer(ATSSPostProcessor):
+class GflPostProcesser(ATSSPostProcessor):
     def __init__(self,
                  pre_nms_thresh,
                  pre_nms_top_n,
@@ -239,7 +256,7 @@ class Gfl_Post_Processer(ATSSPostProcessor):
                  bbox_voting_threshold=0,
                  bbox_aug_enabled=False,
                  ):
-        super(Gfl_Post_Processer,self).__init__(pre_nms_thresh,
+        super(GflPostProcesser,self).__init__(pre_nms_thresh,
                  pre_nms_top_n,
                  nms_thresh,
                  fpn_post_nms_top_n,
@@ -309,3 +326,6 @@ class Gfl_Post_Processer(ATSSPostProcessor):
 
         # results : [image1_featuremapj_predictedbbox,....,imageN_featuremapj_predictedbbox]
         return results
+
+
+

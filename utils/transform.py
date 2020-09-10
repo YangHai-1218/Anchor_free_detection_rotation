@@ -10,7 +10,7 @@ import math
 from .boxlist import BoxList,boxlist_ioa,cat_boxlist
 
 """
-Note that: this data augemntation pipeline is based on opencv, 
+Note this: this data augemenation pipeline is based on cv2, 
 so if you want to use the following methods, 
 make sure the input data is np.ndarray, and BGR format
 """
@@ -160,7 +160,8 @@ class RandomHorizontalFlip:
         if random.random() < self.p:
             img = np.fliplr(img)
             img = np.ascontiguousarray(img)
-            target = target.transpose(0)
+            if target is not None:
+                target = target.transpose(0)
 
         return img, target
 
@@ -177,6 +178,16 @@ class RandomVerticalFlip:
         return img, target
 
 
+class RandomRotate90:
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, img, target):
+        if random.random() < self.p:
+            img = np.rot90(img)
+            target = target.rotate_90()
+            img = np.ascontiguousarray(img)
+        return img, target
 class ToTensor:
     def __call__(self, img, target):
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, channel last to channel first
@@ -196,15 +207,7 @@ class Normalize:
         return img, target
 
 
-class RandomBrightness:
-    def __init__(self, factor):
-        self.factor = factor
 
-    def __call__(self, img, target):
-        factor = random.uniform(-self.factor, self.factor)
-        img = F.adjust_brightness(img, 1 + factor)
-
-        return img, target
 
 
 class RandomMixUp:
@@ -227,7 +230,7 @@ class RandomMixUp:
         img1 = img
         target1 = target
         idx2 = random.choice(range(len(self.dataset)))
-        img2,target2,_ = self.dataset[idx2]
+        img2,target2,_ = self.dataset[(idx2,False)]
         height = max(img1.shape[0],img2.shape[0])
         width = max(img1.shape[1],img2.shape[1])
 
@@ -251,7 +254,7 @@ class RandomMixUp:
 class Multi_Scale_with_Crop:
     def __init__(self,scales,target_size,pad_color=(114, 114, 114)):
         '''
-        scales: list, short edge of the image is randomly sample from scales, and the long edge is fixed as 2000
+        scales: list, short edge of the image is randomly sample from scales, and the long edge is fixed as 3840
         target_size : after rescaling the image, random crop a region of target size from rescaled image
         target_size: (w,h)
         '''
@@ -264,7 +267,7 @@ class Multi_Scale_with_Crop:
         short_edge = random.choice(self.short_edges)
         height, width, _ = img.shape
         if height > width:
-            scale_factor = short_edge/width
+            scale_factor = short_edge / width
             resized_height = math.ceil(scale_factor*height)
             resized_width = short_edge
             if resized_height > self.long_edge:
@@ -284,16 +287,16 @@ class Multi_Scale_with_Crop:
         resized_image = cv2.resize(img,(resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
         resized_target = target.resize((resized_width, resized_height))
 
-        pad_w = self.target_size[0] - resized_width if self.target_size[0]>resized_width else 0
-        pad_h = self.target_size[1] - resized_height if self.target_size[1]>resized_height else 0
+        pad_w = self.target_size[0] - resized_width if self.target_size[0] > resized_width else 0
+        pad_h = self.target_size[1] - resized_height if self.target_size[1] > resized_height else 0
         new_image = np.zeros((resized_height+pad_h,resized_width+pad_w, 3), dtype=np.uint8)
         new_image[:, :, 0] = self.color[0]
         new_image[:, :, 1] = self.color[1]
         new_image[:, :, 2] = self.color[2]
         new_image[0:resized_height, 0:resized_width] = resized_image
 
-        left_x = random.randint(0,resized_width+pad_w-self.target_size[0])
-        top_y = random.randint(0,resized_height+pad_h-self.target_size[1])
+        left_x = random.randint(0, resized_width + pad_w-self.target_size[0])
+        top_y = random.randint(0, resized_height + pad_h-self.target_size[1])
         right_x = left_x + self.target_size[0]
         bottom_y = top_y+self.target_size[1]
 
@@ -370,17 +373,17 @@ class Mosaic:
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h# xmin, ymin, xmax, ymax (small image)
                 x_left,y_top = x1a,y1a
             elif i == 1: # right top
-                img,target,_ = self.dataset[other_indices[i-1]]
+                img,target,_ = self.dataset[(other_indices[i-1],False)]
                 h,w,_ = img.shape
                 x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, self.image_size[0] * 2), yc
                 x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
             elif i == 2:  # left bottom
-                img, target,_ = self.dataset[other_indices[i - 1]]
+                img, target,_ = self.dataset[(other_indices[i - 1],False)]
                 h, w, _ = img.shape
                 x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(self.image_size[1] * 2, yc + h)
                 x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, max(xc, w), min(y2a - y1a, h)
             elif i == 3:  # bottom right
-                img, target , _ = self.dataset[other_indices[i - 1]]
+                img, target , _ = self.dataset[(other_indices[i - 1],False)]
                 h, w, _ = img.shape
                 x1a, y1a, x2a, y2a = xc, yc, min(xc + w, self.image_size[0] * 2), min(self.image_size[1] * 2, yc + h)
                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
@@ -519,26 +522,45 @@ class RandomAffine:
 
 
 def test():
-    from .dataset import COCODataset
-    from utils.coco_meta import CLASS_NAME
-    dataset = COCODataset('../../03data/coco2017/', 'val')
+    from .dataset import DOTADataset
+    from tools.visualize import draw_ploygon_bbox_text,COLOR_TABLE
+    from torchvision import transforms
 
-    def plot_targets_PIL(image, targets):
+    dataset = DOTADataset('/Users/haiyang/Documents/03data/DOTA-v1.5', split='val', image_folder_name='images_',
+                          anno_folder_name='annotations_')
 
+    transform = Compose(
+        [
+            # RandomHSV(0.1,0.1,0.1),
+            # RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
+            RandomHorizontalFlip(1),
+            RandomVerticalFlip(1),
+            RandomRotate90(1),
+            # Resize_For_Efficientnet(compund_coef=2),
+            # Cutout(0.9),
+            # Mosaic(image_size=(768,768),dataset=dataset),
+            # Resize_For_Efficientnet(compund_coef=2),
+            # Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
+            # RandomMixUp(dataset),
+            ToTensor(),
+            # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
+        ])
+
+    def plot_targets_PIL(image, targets, dataset):
+        targets = targets.convert('xyxyxyxy')
         draw = ImageDraw.Draw(image)
         labels = targets.get_field("labels")
-        weights = targets.get_field("weights")
+        #weights = targets.get_field("weights")
 
-        for target,weight in zip(targets.bbox,weights):
-            draw.rectangle((target[0].item(), target[1].item(), target[2].item(), target[3].item()), outline="red",
-                           width=2)
-            #draw.text((target[0].item(), target[1].item()),CLASS_NAME[int(label.item())],fill=(0,255,0))
-            draw.text((target[0].item(), target[1].item()), str(weight.item()), fill=(0, 255, 0))
+
+        for target,label in zip(targets.bbox,labels):
+            draw_ploygon_bbox_text(draw, target, dataset.NAME_TAB[label.item()], COLOR_TABLE[label.item()])
+
 
     def plot_targets_cv2(image, targets):
         for target, label in zip(targets.bbox, targets.get_field('labels')):
             cv2.rectangle(image, (int(target[0]), int(target[1])), (int(target[2]), int(target[3])), (0, 255, 0), 2)
-            cv2.putText(image, CLASS_NAME[int(label.item())], (int(target[0]), int(target[1])),
+            cv2.putText(image, dataset.NAME_TAB[int(label.item())], (int(target[0]), int(target[1])),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         return image
 
@@ -555,24 +577,12 @@ def test():
         # img,targets_new = flip(img_origin,targets)
         # flip = RandomVerticalFlip()
         # img_new,targets_new = flip(img_origin,targets_origin)
-        transform = Compose(
-            [
-                # RandomHSV(0.1,0.1,0.1),
-                #RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
-                # RandomHorizontalFlip(),
-                #Resize_For_Efficientnet(compund_coef=2),
-                #Cutout(0.9),
-                # Mosaic(image_size=(768,768),dataset=dataset),
-                # Resize_For_Efficientnet(compund_coef=2),
-                #Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
-                RandomMixUp(dataset),
-                ToTensor(),
-                # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
-            ])
 
         # img_origin = plot_targets(img_origin, targets_origin)
         img_new, targets_new = transform(img_origin, targets_origin)
         print(f'image_size:{img_new.size()}')
+        print(f'new_targets:{targets_new}')
+        print(f'original_targets:{targets_origin}')
 
         # cv2.imshow('image_origin', img_origin)
         # cv2.waitKey()
@@ -580,13 +590,11 @@ def test():
         # cv2.imshow('image', img)
         # cv2.waitKey()
         # #img_combine = np.hstack((img,img_origin))
-        #
-        from torchvision import transforms
-        #
+
 
         # print(targets_new)
         img_new = transforms.ToPILImage()(img_new).convert('RGB')
-        plot_targets_PIL(img_new, targets_new)
+        plot_targets_PIL(img_new, targets_new, dataset)
         img_new.show()
 
 

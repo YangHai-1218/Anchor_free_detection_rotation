@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import math
 from torch.nn import functional as F
+from utils import cat_boxlist, Assigner
+from utils import GIoULoss,SigmoidFocalLoss,concat_box_prediction_layers,get_num_gpus,reduce_sum
 
 class ATSSHead(nn.Module):
     def __init__(self, in_channels, n_class, n_conv, prior, regression_type):
@@ -60,6 +62,11 @@ class ATSSHead(nn.Module):
             in_channels, num_anchors * 1, kernel_size=3, stride=1,
             padding=1
         )
+        # -90 < angle <= 0, channel = 90
+        self.angle = nn.Conv2d(
+            in_channels, num_anchors * 90, kernel_size=3, stride=1,
+            padding=1
+        )
 
         # initialization
         for modules in [self.cls_tower, self.bbox_tower,
@@ -84,6 +91,7 @@ class ATSSHead(nn.Module):
         logits = []
         bbox_reg = []
         centerness = []
+        angle = []
         for l, feature in enumerate(x):
             cls_tower = self.cls_tower(feature)
             box_tower = self.bbox_tower(feature)
@@ -95,8 +103,9 @@ class ATSSHead(nn.Module):
                 bbox_pred = F.relu(bbox_pred)
             bbox_reg.append(bbox_pred)
 
+            angle.append(self.angle(box_tower))
             centerness.append(self.centerness(box_tower))
-        return logits, bbox_reg, centerness
+        return logits, bbox_reg, centerness,angle
 
 
 class Scale(nn.Module):
@@ -107,3 +116,114 @@ class Scale(nn.Module):
 
     def forward(self, input):
         return input * self.scale
+
+
+class ATSSLoss(object):
+    def __init__(self, gamma, alpha, fg_iou_threshold, bg_iou_threshold, positive_type, reg_loss_weight, top_k, box_coder):
+        self.cls_loss_func = SigmoidFocalLoss(gamma, alpha)
+        self.centerness_loss_func = nn.BCEWithLogitsLoss(reduction="sum")
+        self.angle_loss_func = nn.CrossEntropyLoss(reduction='sum')
+        self.reg_loss_func = GIoULoss()
+        self.reg_loss_weight = reg_loss_weight
+        self.box_coder = box_coder
+        self.assigner = Assigner(positive_type,box_coder,fg_iou_threshold,bg_iou_threshold,top_k)
+
+
+    def compute_centerness_targets(self, reg_targets, anchors):
+        gts = self.box_coder.decode(reg_targets, anchors)
+        anchors_cx = (anchors[:, 2] + anchors[:, 0]) / 2
+        anchors_cy = (anchors[:, 3] + anchors[:, 1]) / 2
+        l = anchors_cx - gts[:, 0]
+        t = anchors_cy - gts[:, 1]
+        r = gts[:, 2] - anchors_cx
+        b = gts[:, 3] - anchors_cy
+        left_right = torch.stack([l, r], dim=1)
+        top_bottom = torch.stack([t, b], dim=1)
+        centerness = torch.sqrt((left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0]) * \
+                      (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0]))
+        assert not torch.isnan(centerness).any()
+        return centerness
+
+    def __call__(self, box_cls, box_regression, centerness, angle, targets, anchors):
+        '''
+        box_cls: list(tensor) tensor shape (N,class_num,H,W) classification branch output for every feature level ,
+                        N is the batchsize,
+        box_regression : list(tensor) tensor shape (N,4,H,W) localization branch output for every feature level
+        centerness: list(tensor) tensor shape (N,1.H,W) centerness branch output for every feature level
+        angle: list(tensor) tensor shape (N,90,H,W) angle branch output for every feature level
+        taregts: list(boxlist) , boxlist object, ground_truth object for every image,
+        anchos: list(list)  [image_1_anchors,...,image_N_anchors],
+                image_i_anchors : [leverl_1_anchor,...,leverl_n_anchor]
+                level_i_anchor:boxlist
+        '''
+
+        labels, reg_targets, weights_label = self.assigner(targets,anchors)
+
+        # prepare prediction
+        N = len(labels)
+        box_cls_flatten, box_regression_flatten = concat_box_prediction_layers(box_cls, box_regression)
+        centerness_flatten = [ct.permute(0, 2, 3, 1).reshape(N, -1, 1) for ct in centerness]
+        centerness_flatten = torch.cat(centerness_flatten, dim=1).reshape(-1)
+        angle_flatten = [an.permute(0, 2, 3, 1).reshape(N, -1, 1) for an in angle]
+        angle_flatten = torch.cat(angle_flatten, dim=1).reshape(-1, 90)
+
+        # prepare ground truth
+        labels_flatten = torch.cat(labels, dim=0)
+        reg_targets_flatten = torch.cat(reg_targets[:, :4], dim=0)
+        angel_targets_flatten = torch.cat(reg_targets[:, 4], dim=0)
+        weights_label_flatten = torch.cat(weights_label, dim=0)
+
+        # prepare anchors
+        anchors_flatten = torch.cat([cat_boxlist(anchors_per_image).bbox for anchors_per_image in anchors], dim=0)
+
+        pos_inds = torch.nonzero(labels_flatten > 0).squeeze(1)
+
+        num_gpus = get_num_gpus()
+        total_num_pos = reduce_sum(pos_inds.new_tensor([pos_inds.numel()])).item()
+        num_pos_avg_per_gpu = max(total_num_pos / float(num_gpus), 1.0)
+
+        cls_loss = self.cls_loss_func(box_cls_flatten, labels_flatten.int(),weights_label_flatten) / num_pos_avg_per_gpu
+
+        if pos_inds.numel() > 0:
+            # prepare positive sample matched gt
+            reg_targets_flatten = reg_targets_flatten[pos_inds]
+            angel_targets_flatten = angel_targets_flatten[pos_inds]
+            centerness_targets = self.compute_centerness_targets(reg_targets_flatten, anchors_flatten)
+            weights_label_flatten = weights_label_flatten[pos_inds]
+
+            anchors_flatten = anchors_flatten[pos_inds]
+
+            # prepare positive sample prediction
+            box_regression_flatten = box_regression_flatten[pos_inds]
+            centerness_flatten = centerness_flatten[pos_inds]
+            angle_flatten = angle_flatten[pos_inds]
+
+            sum_centerness_targets_avg_per_gpu = reduce_sum(centerness_targets.sum()).item() / float(num_gpus)
+
+            # attention here
+            reg_loss = self.reg_loss_func(box_regression_flatten, reg_targets_flatten, anchors_flatten,
+                                     weight=centerness_targets*weights_label_flatten) \
+                       / sum_centerness_targets_avg_per_gpu
+
+            centerness_loss = self.centerness_loss_func(centerness_flatten, centerness_targets) / num_pos_avg_per_gpu
+
+            angle_loss = self.angle_loss_func(angle_flatten, angel_targets_flatten) / num_pos_avg_per_gpu
+        else:
+            reg_loss = box_regression_flatten.sum()
+            centerness_loss = reg_loss * 0
+            angle_loss = reg_loss * 0
+
+        return cls_loss, reg_loss * self.reg_loss_weight, centerness_loss, angle_loss
+
+
+
+def test():
+    from utils import BoxCoder
+    coder = BoxCoder(regression_type='bbox',anchor_sizes=[64, 128, 256, 512, 1024],
+                     anchor_strides=[8, 16, 32, 64, 128])
+    loss_obj = ATSSLoss(gamma=2.0, alpha=0.25, fg_iou_threshold=0.5,bg_iou_threshold=0.4,positive_type='ATSS',
+                        reg_loss_weight=2.0, top_k=9, box_coder=coder)
+    batchsize = 1
+    H = 12
+    W = 12
+    class_num = 2

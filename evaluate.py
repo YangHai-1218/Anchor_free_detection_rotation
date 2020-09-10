@@ -175,6 +175,7 @@ def map_to_origin_image(img_meta,pred,flipmode='no',resize_mode='letterbox'):
         pred_resize._copy_extra_fields(pred)
         pred_resize = pred_resize.clip_to_image(remove_empty=True)
         pred_resize = pred_resize.resize((width, height))
+        pred_resize = pred_resize.clip_to_image(remove_empty=True)
         pred_resize = pred_resize.convert('xywh')
 
     elif resize_mode == 'wrap':

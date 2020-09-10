@@ -133,3 +133,4 @@ dmypy.json
 weights/
 training_dir/
 test_temp.py
+.DS_Store

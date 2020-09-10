@@ -1,12 +1,8 @@
-
 import torch
 from torch import nn
 from torch.nn import functional as F
 import math
-from utils.base_conv import (
-    Conv2dStaticSamePadding,
-    MaxPool2dStaticSamePadding,
-)
+from utils.base_conv import Conv2dStaticSamePadding
 from utils.activation import (
     MemoryEfficientSwish,
     Swish,

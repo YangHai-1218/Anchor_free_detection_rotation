@@ -2,14 +2,15 @@ import torch
 from pycocotools import coco,cocoeval
 import numpy as np
 import json
-from utils.boxlist import BoxList,boxlist_ml_nms,cat_boxlist
+#from utils.boxlist import BoxList,boxlist_ml_nms,cat_boxlist
 from collections import defaultdict
 import os
 import cv2
 from utils.transform import ToTensor,RandomHorizontalFlip
 from evaluate import map_to_origin_image
+from .dataset import ImageList
 '''
-Attention: this test_augemntion pipeline is post prcocess, base on the coco result json format
+Attention: this test_augmenation pipeline is post process, base on the coco result json format
 '''
 
 
@@ -185,12 +186,15 @@ class Multi_Scale_Augment:
 
 
 class Multi_Scale_Test:
-    def __init__(self,dataset,
+    def __init__(self,
+
+                 dataset,
                  scale,
                  weight,
                  object_size_threshold,
                  nms_threshold,
                  fpn_post_nms_top_n,
+                 device,
                  flip_enable=False,
                  bbox_aug_vote = False,
                  bbox_voting_threshold=0,):
@@ -207,7 +211,7 @@ class Multi_Scale_Test:
         bbox_aug_vote: enable bbox voting
         bbox_voting_threshold: the threshold for voting , use the bbox weith IOU>this threshold to refine bbox
         """
-        self.scale = scale
+        self.scales = scale
         assert len(scale) == len(weight) , "scale num == weight num"
         self.weights = np.array(weight)
         self.small_object_threshold = object_size_threshold[0]
@@ -218,6 +222,7 @@ class Multi_Scale_Test:
         self.fpn_post_nms_top_n = fpn_post_nms_top_n
         self.bbox_aug_vote = bbox_aug_vote
         self.bbox_voting_threshold = bbox_voting_threshold
+        self.device = device
 
 
     def weight_score(self,weight,pred):
@@ -227,7 +232,7 @@ class Multi_Scale_Test:
         # weight score
         small_object_index = area < self.small_object_threshold
         scores[small_object_index] *= weight[0]
-        medium_object_index = self.small_object_threshold <= area and area < self.large_object_threshold
+        medium_object_index = (self.small_object_threshold <= area)& (area < self.large_object_threshold)
         scores[medium_object_index] *= weight[1]
         large_object_inedx = area >= self.large_object_threshold
         scores[large_object_inedx] *= weight[2]
@@ -237,24 +242,51 @@ class Multi_Scale_Test:
     def __call__(self, model,images,indexs):
         # TODO VOTING
         result = []
+
+        images_resized = {i:[] for i,_ in enumerate(self.scales)}
+
+        image_resized_flipped = {i:[] for i,_ in enumerate(self.scales)}
+
+
+        for i,scale in enumerate(self.scales):
+            for index in indexs:
+                image_meta = self.dataset.get_image_meta(index)
+                image_path = image_meta['file_name']
+                image_path = os.path.join(self.dataset.root, image_path)
+                image_origin = cv2.imread(image_path)
+                image_resized = cv2.resize(image_origin, scale, interpolation=cv2.INTER_LINEAR)
+                image_resized_tensor, _ = ToTensor()(image_resized, None)
+                image_resized[i].append(image_resized_tensor)
+
+                image_resized_fliped, _ = RandomHorizontalFlip(p=1)(image_resized, None)
+                image_resized_fliped_tensor, _ = ToTensor()(image_resized_fliped, None)
+
         for index in indexs:
             image_meta = self.dataset.get_image_meta(index)
             image_path = image_meta['file_name']
             image_path = os.path.join(self.dataset.root, image_path)
             image_origin = cv2.imread(image_path)
 
+            image_resized = cv2.resize(image_origin, scale, interpolation=cv2.INTER_LINEAR)
+            image_resized_tensor, _ = ToTensor()(image_resized, None)
+
             preds = []
             for i,scale in enumerate(self.scales):
                 image_resized = cv2.resize(image_origin,scale,interpolation=cv2.INTER_LINEAR)
-                image_resized_tensor = ToTensor()(image_resized,None)
+                image_resized_tensor, _ = ToTensor()(image_resized,None)
+
+                image_resized_tensor = ImageList(image_resized_tensor[None],[(scale[1],scale[0])])
+                image_resized_tensor = image_resized_tensor.to(self.device)
                 [pred], _ = model(image_resized_tensor)
                 pred = map_to_origin_image(image_meta,pred)
                 pred = self.weight_score(self.weights[i],pred)
                 preds.append(pred)
 
                 # Horizontal flip augment
-                image_resized_fliped = RandomHorizontalFlip(p=1)(image_resized,None)
-                image_resized_fliped_tensor = ToTensor()(image_resized_fliped)
+                image_resized_fliped, _ = RandomHorizontalFlip(p=1)(image_resized,None)
+                image_resized_fliped_tensor, _ = ToTensor()(image_resized_fliped,None)
+                image_resized_fliped_tensor = ImageList(image_resized_fliped_tensor[None],[(scale[1],scale[0])])
+                image_resized_fliped_tensor = image_resized_fliped_tensor.to(self.device)
                 [pred], _ = model(image_resized_fliped_tensor)
                 pred = map_to_origin_image(image_meta,pred,flipmode='h')
                 pred = self.weight_score(self.weights[i],pred)

@@ -23,17 +23,31 @@ def has_valid_annotation(annot):
     return True
 
 
-class COCODataset(datasets.CocoDetection):
-    def __init__(self, path, split, transform=None):
-        self.split = split
-        '''split: train, val, test'''
-        root = os.path.join(path, f'{split}2017')
-        if split == 'val_loss':
-            annot = os.path.join(path, 'annotations', f'instances_val2017.json')
-            root = os.path.join(path, 'val2017')
-        else:
-            annot = os.path.join(path, 'annotations', f'instances_{split}2017.json')
-            root = os.path.join(path, f'{split}2017')
+class DOTADataset(datasets.CocoDetection):
+
+
+    NAME_TAB = ('__background__', 'plane', 'baseball-diamond', 'bridge', 'ground-track-field',
+                'small-vehicle', 'large-vehicle', 'ship',
+                'tennis-court', 'basketball-court',
+                'storage-tank', 'soccer-ball-field',
+                'roundabout', 'harbor',
+                'swimming-pool', 'helicopter')
+
+    def __init__(self, path, split,image_folder_name, anno_folder_name,transform=None):
+        """
+        path : dataset folder path
+               dataset structure:
+            ├── dataset_path
+            │   ├── annotations
+            │   │   ├── anno_folder_name +'train'.json
+            │   │   ├── anno_folder_name + 'val'.json
+            │   │   ├── anno_folder_name + 'test'.json
+            │   ├── image_folder_name+'train'
+            │   ├── image_folder_name+'val'
+            │   ├── image_folder_name+'test'
+        """
+
+        root, annot = self.get_root_annotation_path(path,split,image_folder_name,anno_folder_name)
 
         super().__init__(root, annot)
 
@@ -57,17 +71,66 @@ class COCODataset(datasets.CocoDetection):
 
         self.transformer = transform
 
-    def __getitem__(self, index):
-        img, annots = super().__getitem__(index)
+    def set_transform(self,transform):
+        self.transformer = transform
 
 
-        img = cv2.cvtColor(np.asarray(img),cv2.COLOR_RGB2BGR)
+
+    def get_root_annotation_path(self,path,split,image_folder_name,anno_folder_name):
+        '''
+        root : image dir
+        annot: annotation file path
+        '''
+        self.split = split
+        self.anno_folder_name = anno_folder_name
+        self.image_folder_name = image_folder_name
+        '''split: train, val, test'''
+
+        if split == 'val_loss':
+            annot = os.path.join(path, 'annotations', f"{self.anno_folder_name}val.json")
+            root = os.path.join(path, f'{self.image_folder_name}val')
+        else:
+            annot = os.path.join(path, 'annotations', f'{self.anno_folder_name}{split}.json')
+            root = os.path.join(path, f'{self.image_folder_name}{split}')
+        return root, annot
+
+    def __getitem__(self, index,transform_enable=True):
+        if isinstance(index,tuple) or isinstance(index,list):
+            transform_enable = index[1]
+            index = index[0]
+        else:
+            transform_enable = True
+        coco = self.coco
+        img_id = self.ids[index]
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        annots = coco.loadAnns(ann_ids)
+
+        path = coco.loadImgs(img_id)[0]['file_name']
+
+
+        img = cv2.imread(os.path.join(self.root, path), cv2.IMREAD_ANYDEPTH)
+        if img.ndim == 2:
+            # if single channel image, then convert to BGR
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif img.ndim == 3:
+            pass
+        else:
+            raise RuntimeError("{} channel image not supported".format(img.ndim))
+
+
+
         height, width,_ = img.shape
         annots = [o for o in annots if o['iscrowd'] == 0]
 
         boxes = [o['bbox'] for o in annots]
-        boxes = torch.as_tensor(boxes).reshape(-1, 4)
-        target = BoxList(boxes, (width,height), mode='xywh').convert('xyxy')
+        boxes = torch.as_tensor(boxes).reshape(-1, 8)
+        #target = BoxList(boxes, (width,height), mode='xyxyxyxy').convert('xywha')
+        target = BoxList(boxes, (width,height), mode='xyxyxyxy')
+        target = target.change_order_to_clockwise()
+        target = target.convert('xywha_d')
+
+        #target = target.convert('xywha')
+
 
         classes = [o['category_id'] for o in annots]
         classes = [self.category2id[c] for c in classes]
@@ -75,10 +138,11 @@ class COCODataset(datasets.CocoDetection):
         # target.fields['labels'] = classes
         target.add_field('labels', classes)
 
+
         target = target.clip_to_image(remove_empty=True)
 
 
-        if self.transformer is not None:
+        if self.transformer is not None and transform_enable:
             img, target = self.transformer(img, target)
 
         return img, target, index
@@ -139,5 +203,3 @@ def collate_fn(config):
         return imgs, targets, ids
 
     return collate_data
-
-

@@ -1,6 +1,6 @@
 import torch
 from .boxlist import cat_boxlist,boxlist_iou
-
+import copy
 INF = 100000000
 
 
@@ -116,7 +116,7 @@ class Matcher(object):
 
 
 class Assigner:
-    def __init__(self,mode,box_coder,fg_iou_threshold, bg_iou_threshold,**kwargs):
+    def __init__(self,mode,box_coder,fg_iou_threshold, bg_iou_threshold,top_k,**kwargs):
         '''
         lable assigner
         mode: 'SSC', 'ATSS', 'TOPK' 'IoU'
@@ -125,17 +125,35 @@ class Assigner:
         self.box_coder = box_coder
         self.matcher = Matcher(fg_iou_threshold,bg_iou_threshold,True)
         self.args_other = kwargs
+        self.top_k = top_k
 
 
 
-    def ATSS_assign(self,targets,anchors):
+    def targets_prepare(self,targets):
+        targets_ = copy.deepcopy(targets)
+        rounded_targets = targets_.xywhad_round()
+        rounded_targets.bbox[:, 4] += 90
+        return rounded_targets
+
+
+    def ATSS_assign(self,targets, anchors):
+        '''
+        Args:
+            targets: list(boxlist), gt_bbox for images in batch
+            anchos: list(list)  [image_1_anchors,...,image_N_anchors],
+                image_i_anchors : [leverl_1_anchor,...,leverl_n_anchor]
+                level_i_anchor:boxlist
+        '''
         cls_labels = []
         reg_targets = []
         weights = []
 
         for im_i in range(len(targets)):
+
             targets_per_im = targets[im_i]
-            assert targets_per_im.mode == "xyxy"
+            assert targets_per_im.mode == 'xywha_d'
+            targets_per_im = self.targets_prepare(targets_per_im)
+
             bboxes_per_im = targets_per_im.bbox
             labels_per_im = targets_per_im.get_field("labels")
 
@@ -150,12 +168,12 @@ class Assigner:
             num_anchors_per_level = [len(anchors_per_level.bbox) for anchors_per_level in anchors[im_i]]
             ious = boxlist_iou(anchors_per_im, targets_per_im)
 
-            gt_cx = (bboxes_per_im[:, 2] + bboxes_per_im[:, 0]) / 2.0
-            gt_cy = (bboxes_per_im[:, 3] + bboxes_per_im[:, 1]) / 2.0
+            gt_cx = bboxes_per_im[:, 0]
+            gt_cy = bboxes_per_im[:, 1]
             gt_points = torch.stack((gt_cx, gt_cy), dim=1)
 
-            anchors_cx_per_im = (anchors_per_im.bbox[:, 2] + anchors_per_im.bbox[:, 0]) / 2.0
-            anchors_cy_per_im = (anchors_per_im.bbox[:, 3] + anchors_per_im.bbox[:, 1]) / 2.0
+            anchors_cx_per_im = anchors_per_im.bbox[:, 0]
+            anchors_cy_per_im = anchors_per_im.bbox[:, 1]
             anchor_points = torch.stack((anchors_cx_per_im, anchors_cy_per_im), dim=1)
 
             distances = (anchor_points[:, None, :] - gt_points[None, :, :]).pow(2).sum(-1).sqrt()
@@ -183,6 +201,8 @@ class Assigner:
             anchor_num = anchors_cx_per_im.shape[0]
             for ng in range(num_gt):
                 candidate_idxs[:, ng] += ng * anchor_num
+
+
             e_anchors_cx = anchors_cx_per_im.view(1, -1).expand(num_gt, anchor_num).contiguous().view(-1)
             e_anchors_cy = anchors_cy_per_im.view(1, -1).expand(num_gt, anchor_num).contiguous().view(-1)
             candidate_idxs = candidate_idxs.view(-1)
@@ -216,7 +236,7 @@ class Assigner:
             reg_targets.append(reg_targets_per_im)
             weights.append(weight)
 
-        return cls_labels,reg_targets,weights
+        return cls_labels, reg_targets, weights
 
     def SSC_assign(self,targets,anchors):
         cls_labels = []
@@ -326,7 +346,7 @@ class Assigner:
 
             is_pos = ious * False
             for ng in range(num_gt):
-                _, topk_idxs = (ious[:, ng] - distances[:, ng]).topk(self.args_other['top_k'], dim=0)
+                _, topk_idxs = (ious[:, ng] - distances[:, ng]).topk(self.top_k, dim=0)
                 l = anchors_cx_per_im[topk_idxs] - bboxes_per_im[ng, 0]
                 t = anchors_cy_per_im[topk_idxs] - bboxes_per_im[ng, 1]
                 r = bboxes_per_im[ng, 2] - anchors_cx_per_im[topk_idxs]
@@ -446,6 +466,3 @@ class Assigner:
             raise  NotImplementedError
 
         return cls_labels, reg_targets, weights
-
-
-

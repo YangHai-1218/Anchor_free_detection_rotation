@@ -1,0 +1,66 @@
+{
+    "images": [],
+    "annotations": [],
+    "categories": [
+        {
+            "id": 1,
+            "name": "plane"
+        },
+        {
+            "id": 2,
+            "name": "baseball-diamond"
+        },
+        {
+            "id": 3,
+            "name": "bridge"
+        },
+        {
+            "id": 4,
+            "name": "ground-track-field"
+        },
+        {
+            "id": 5,
+            "name": "small-vehicle"
+        },
+        {
+            "id": 6,
+            "name": "large-vehicle"
+        },
+        {
+            "id": 7,
+            "name": "ship"
+        },
+        {
+            "id": 8,
+            "name": "tennis-court"
+        },
+        {
+            "id": 9,
+            "name": "basketball-court"
+        },
+        {
+            "id": 10,
+            "name": "storage-tank"
+        },
+        {
+            "id": 11,
+            "name": "soccer-ball-field"
+        },
+        {
+            "id": 12,
+            "name": "roundabout"
+        },
+        {
+            "id": 13,
+            "name": "harbor"
+        },
+        {
+            "id": 14,
+            "name": "swimming-pool"
+        },
+        {
+            "id": 15,
+            "name": "helicopter"
+        }
+    ]
+}

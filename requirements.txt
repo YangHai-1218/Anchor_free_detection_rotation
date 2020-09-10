@@ -1,3 +1,4 @@
 tqdm
 pycocotools
 tensorboardX
+opencv-python
