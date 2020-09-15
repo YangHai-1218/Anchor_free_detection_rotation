@@ -2,13 +2,10 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, sampler
 from tqdm import tqdm
-
 from argument import get_args
 from backbone import vovnet39, vovnet57, resnet50, resnet101
-from utils.dataset import COCODataset, collate_fn, DIORdataset
+from utils.dataset import DOTADataset, collate_fn
 from model import ATSS,Efficientnet_Bifpn_ATSS
-from utils import transform
-from utils.lrscheduler import GluonLRScheduler,iter_per_epoch_cal,set_schduler_with_wormup
 from distributed import (
     get_rank,
     synchronize,
@@ -16,11 +13,19 @@ from distributed import (
     DistributedSampler,
     get_world_size,
 )
-from utils.ema import EMA
+from utils import (
+    EMA,
+    Trainer,
+    Tester,
+    GluonLRScheduler,
+    transform,
+    iter_per_epoch_cal,
+    set_schduler_with_wormup
+)
 import os, cv2
 from tensorboardX import SummaryWriter
 import numpy as np
-from utils.trainer import Trainer,Tester
+
 
 
 
@@ -125,13 +130,16 @@ if __name__ == '__main__':
 
     device = 'cuda'
 
-    train_set = DIORdataset(args.path, 'train')
+    train_set = DOTADataset(path=args.path, split='train', image_folder_name='min_split_',
+                            anno_folder_name='annotations_split_')
     train_trans = transform.Compose(
         [
             transform.RandomHorizontalFlip(0.5),
-            # transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
-            transform.RandomMixUp(dataset=train_set),
-            transform.Multi_Scale_with_Crop(scales=[640, 960, 1280], target_size=(640, 640)),
+            #transform.RandomMixUp(dataset=train_set),
+            transform.RandomVerticalFlip(0.5),
+            transform.RandomRotate(0.5, rotate_time=4),
+            transform.Cutout(0.5),
+            transform.Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152], target_size=(768, 768)),
             transform.ToTensor(),
             transform.Normalize(args.pixel_mean, args.pixel_std),
         ]
@@ -145,33 +153,33 @@ if __name__ == '__main__':
         collate_fn=collate_fn(args),
     )
 
-    valid_set = DIORdataset(args.path, 'val')
-    valid_trans = transform.Compose(
-        [
-            transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
-            transform.ToTensor(),
-            transform.Normalize(args.pixel_mean, args.pixel_std)
-        ]
-    )
-    valid_set.set_transform(valid_trans)
-    valid_loader = DataLoader(
-        valid_set,
-        batch_size=args.batch,
-        sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
-        num_workers=args.num_workers,
-        collate_fn=collate_fn(args),
-    )
+    # valid_set = DIORdataset(args.path, 'val')
+    # valid_trans = transform.Compose(
+    #     [
+    #         transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
+    #         transform.ToTensor(),
+    #         transform.Normalize(args.pixel_mean, args.pixel_std)
+    #     ]
+    # )
+    # valid_set.set_transform(valid_trans)
+    # valid_loader = DataLoader(
+    #     valid_set,
+    #     batch_size=args.batch,
+    #     sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
+    #     num_workers=args.num_workers,
+    #     collate_fn=collate_fn(args),
+    # )
 
 
-    if args.val_with_loss:
-        valid_loss_set = COCODataset(args.path, 'val_loss', valid_trans)
-        val_loss_loader = DataLoader(
-            valid_loss_set,
-            batch_size=args.batch,
-            sampler=data_sampler(valid_loss_set, shuffle=False, distributed=args.distributed),
-            num_workers=args.num_workers,
-            collate_fn=collate_fn(args),
-        )
+    # if args.val_with_loss:
+    #     valid_loss_set = COCODataset(args.path, 'val_loss', valid_trans)
+    #     val_loss_loader = DataLoader(
+    #         valid_loss_set,
+    #         batch_size=args.batch,
+    #         sampler=data_sampler(valid_loss_set, shuffle=False, distributed=args.distributed),
+    #         num_workers=args.num_workers,
+    #         collate_fn=collate_fn(args),
+    #     )
 
 
 
@@ -185,9 +193,11 @@ if __name__ == '__main__':
 
     if args.backbone_type == 'Efficientdet':
         if args.load_pretrained_weight:
-            model = Efficientnet_Bifpn_ATSS(args,compound_coef=args.backbone_coef,load_backboe_weight=True,weight_path=args.weight_path)
+            model = Efficientnet_Bifpn_ATSS(args, compound_coef=args.backbone_coef,
+                                            load_backboe_weight=True, weight_path=args.weight_path)
         else:
-            model = Efficientnet_Bifpn_ATSS(args,compound_coef=args.backbone_coef,load_backboe_weight=False)
+            model = Efficientnet_Bifpn_ATSS(args, compound_coef=args.backbone_coef,
+                                            load_backboe_weight=False)
     elif args.backbone_type == 'ResNet':
         if args.backbone_coef == 18:
             backbone = resnet50(pretrained=True)
@@ -234,15 +244,15 @@ if __name__ == '__main__':
         # if not freeze the backbone, then finetune the backbone,
         optimizer = optim.SGD(
             model.backbone.backbone_net.parameters(),
-            lr = 0,
-            momentum = 0.9,
-            weight_decay = 0.0001,
-            nesterov = True,
+            lr=0,
+            momentum=0.9,
+            weight_decay=0.0001,
+            nesterov=True,
         )
-        optimizer.add_param_group({'params':list(model.backbone.bifpn.parameters()),'lr':0,
+        optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 0,
                                    'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
-        optimizer.add_param_group({'params':list(model.head.parameters()),'lr':0,'momentum':0.9,'weight_decay':0.0001,
-                                   'nesterov':True})
+        optimizer.add_param_group({'params': list(model.head.parameters()), 'lr': 0,
+                                   'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
         print(f'[INFO] efficientnet use the lr :{args.lr*args.lr_gamma_Efficientnet} to finetune,'
               f' bifpn use the lr:{args.lr*args.lr_gamma_BiFPN} to finetune')
     else:
@@ -269,9 +279,9 @@ if __name__ == '__main__':
     # )
     #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
     iter_per_epoch = iter_per_epoch_cal(args, train_set)
-    scheduler = GluonLRScheduler(optimizer,mode='step',nepochs=(args.epoch-args.warmup_epoch),
-                                 iters_per_epoch=iter_per_epoch,step_epoch=[9,11])
-    warmup_scheduler, schdeduler = set_schduler_with_wormup(args,iter_per_epoch,optimizer,scheduler)
+    scheduler = GluonLRScheduler(optimizer, mode='cosine', nepochs=(args.epoch-args.warmup_epoch),
+                                 iters_per_epoch=iter_per_epoch)
+    warmup_scheduler, schdeduler = set_schduler_with_wormup(args, iter_per_epoch, optimizer, scheduler)
 
 
     ema = EMA(model,decay=0.999,enable=args.EMA)
@@ -284,8 +294,8 @@ if __name__ == '__main__':
             broadcast_buffers=False,
         )
 
-    trainer = Trainer(args,train_loader,device)
-    valider = Tester(args,valid_loader,valid_set,device)
+    trainer = Trainer(args, train_loader, device)
+    #valider = Tester(args,valid_loader,valid_set,device)
 
     print(f'[INFO] Start training: learning rate:{args.lr}, total batchsize:{args.batch*get_world_size()}, '
           f'working dir:{args.working_dir}')
@@ -304,11 +314,11 @@ if __name__ == '__main__':
     for epoch in range(args.epoch-(last_epoch+1)):
         epoch += (last_epoch + 1)
 
-        epoch_loss = trainer(model,epoch,optimizer,[scheduler,warmup_scheduler],logger,ema)
+        epoch_loss = trainer.train(model, epoch, optimizer, [scheduler, warmup_scheduler], logger, ema)
 
-        save_checkpoint(model,args,optimizer,epoch)
+        save_checkpoint(model, args, optimizer, epoch)
 
-        valider(model,epoch,logger,ema)
+        #valider(model,epoch,logger,ema)
 
         # if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
         #     val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)

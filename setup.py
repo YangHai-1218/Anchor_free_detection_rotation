@@ -56,5 +56,5 @@ if __name__ == '__main__':
                     'src/cuda/nms_cuda.cpp', 'src/cuda/nms_kernel.cu'
                 ]),
         ],
-        cmdclass= {'build_ext': BuildExtension},
-        zip_safe= False)
+        cmdclass={'build_ext': BuildExtension},
+        zip_safe=False)

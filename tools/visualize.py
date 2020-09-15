@@ -91,14 +91,23 @@ def show_polygon_bbox(img, boxes, labels, NAME_TAB, file_name=None, scores=None,
 def test():
     import cv2
     from utils.dataset import DOTADataset
-    dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5',split='val',image_folder_name='images_',
-                          anno_folder_name='annotations_')
-    for i in range(100):
-        img, target, idx = dataset[i]
+    import random
+    dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5', split='train', image_folder_name='min_split_',
+                          anno_folder_name='annotations_split_')
+
+    for i in range(30):
+        #i = random.randint(0,len(dataset)-1)
+        i = 82
+        img, target, idx, path = dataset[i]
+        print(f'origin_target:{target}')
         img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        print(target)
         target = target.convert('xyxyxyxy')
-        show_polygon_bbox(img, target.bbox, target.get_field("labels"), dataset.NAME_TAB,file_name=None,scores=None,matplotlib=False,
+        show_polygon_bbox(img, target.bbox, target.get_field("labels"), dataset.NAME_TAB,
+                          file_name=None,
+                          scores=None,matplotlib=False,
                          lb_g=True)
+        print(path)
         print(target)
 
 

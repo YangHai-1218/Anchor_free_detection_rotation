@@ -122,7 +122,8 @@ def xyxy_to_xywha(anchors, angle=(-90)):
     if isinstance(angle, (tuple, list)):
         angle = angle[0]
     anchors_with_angle = anchors.new_full((anchors.shape[-2], 5), angle)
-    anchors_with_angle[:, :4] = torch.stack([xc, yc, w, h], dim=-1)
+    # Attention here, if the angle == -90, then w=h, h=w
+    anchors_with_angle[:, :4] = torch.stack([xc, yc, h, w], dim=-1)
 
     return anchors_with_angle
 

@@ -27,18 +27,17 @@ class BoxCoder(object):
 
         '''
 
-
         ex_widths = anchors[:, 2]
         ex_heights = anchors[:, 3]
         ex_ctr_x = anchors[:, 0]
         ex_ctr_y = anchors[:, 1]
-
 
         gt_widths = gt_boxes[:, 2]
         gt_heights = gt_boxes[:, 3]
         gt_ctr_x = gt_boxes[:, 0]
         gt_ctr_y = gt_boxes[:, 1]
         angle = gt_boxes[:, 4]
+
         wx, wy, ww, wh = (10., 10., 5., 5.)
         # Normalize
         targets_dx = wx * (gt_ctr_x - ex_ctr_x) / ex_widths
@@ -80,10 +79,10 @@ class BoxCoder(object):
         pred_h = torch.exp(dh) * heights[:, None]
 
         pred_boxes = torch.zeros_like(preds)
-        pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * (pred_w - 1)
-        pred_boxes[:, 1::4] = pred_ctr_y - 0.5 * (pred_h - 1)
-        pred_boxes[:, 2::4] = pred_ctr_x + 0.5 * (pred_w - 1)
-        pred_boxes[:, 3::4] = pred_ctr_y + 0.5 * (pred_h - 1)
+        pred_boxes[:, 0::4] = pred_ctr_x
+        pred_boxes[:, 1::4] = pred_ctr_y
+        pred_boxes[:, 2::4] = pred_w
+        pred_boxes[:, 3::4] = pred_h
         pred_boxes[:, 4] = preds[:, 4]
         return pred_boxes
 

@@ -2,7 +2,7 @@ import torch
 from pycocotools import coco,cocoeval
 import numpy as np
 import json
-#from utils.boxlist import BoxList,boxlist_ml_nms,cat_boxlist
+from utils import BoxList,boxlist_ml_rnms,cat_boxlist,ImageList
 from collections import defaultdict
 import os
 import cv2
@@ -106,7 +106,7 @@ class Multi_Scale_Augment:
     https://arxiv.org/abs/2008.01365
     this method can perform multi_scale_augment offline by using the coco format result json file
     '''
-    def __init__(self,weight,object_size_threshold,nms_threshold):
+    def __init__(self, weight, object_size_threshold,nms_threshold):
         '''
         weight: list , the first on is for small object weight, the secone one is for larget object weight
         '''
@@ -114,8 +114,8 @@ class Multi_Scale_Augment:
         self.large_object_threshold = object_size_threshold[1]
         self.weight_for_small_object = weight[0]
         self.weight_for_larget_object = weight[1]
-        self.weights = np.array([[self.weight_for_small_object,1,1],
-                                [1,1,self.weight_for_larget_object]
+        self.weights = np.array([[self.weight_for_small_object, 1, 1],
+                                [1, 1, self.weight_for_larget_object]
                                 ])
         self.nms_threshold = nms_threshold
 
@@ -162,7 +162,7 @@ class Multi_Scale_Augment:
             boxlist.add_field('scores', torch.tensor(images_bbox[image_id]['scores']))
             boxlist.add_field('labels', torch.tensor(images_bbox[image_id]['labels']))
             # nms
-            boxlist = boxlist_ml_nms(boxlist, self.nms_threshold)
+            boxlist = boxlist_ml_rnms(boxlist, self.nms_threshold)
 
             boxlist = boxlist.convert('xywh')
             boxes = boxlist.bbox.tolist()
@@ -196,15 +196,14 @@ class Multi_Scale_Test:
                  fpn_post_nms_top_n,
                  device,
                  flip_enable=False,
-                 bbox_aug_vote = False,
+                 bbox_aug_vote=False,
                  bbox_voting_threshold=0,):
         """
+        dataset : dataset object
         scale : list[tuple] , (width,height), inference on every fixed scale
         weight: list[list] , [small_object_weight,medium_object_weight,larget_object_weight], for every scale,
                 the correspoding weight for different size objects
         object_size_threshold: list [small_object_max_size, larget_object_min_size]
-        dataset : dataset object
-        flip_enable: for every scale, perform flip_augmenation
         nms_threshold: the threshold for nms_threshold
         fpn_post_nms_top_n : after nms , keep n bbox with highest bbox
         flip_enable: for every scale , also perform inference on fliped image
@@ -225,91 +224,92 @@ class Multi_Scale_Test:
         self.device = device
 
 
-    def weight_score(self,weight,pred):
-        scores = pred.get_field("scores")
-        area = pred.area()
+    def weight_score(self, weight, preds):
+        for pred in preds:
+            scores = pred.get_field("scores")
+            area = pred.area()
 
-        # weight score
-        small_object_index = area < self.small_object_threshold
-        scores[small_object_index] *= weight[0]
-        medium_object_index = (self.small_object_threshold <= area)& (area < self.large_object_threshold)
-        scores[medium_object_index] *= weight[1]
-        large_object_inedx = area >= self.large_object_threshold
-        scores[large_object_inedx] *= weight[2]
-        pred.add_field("scores", scores)
-        return pred
+            # weight score
+            small_object_index = area < self.small_object_threshold
+            scores[small_object_index] *= weight[0]
+            medium_object_index = (self.small_object_threshold <= area)& (area < self.large_object_threshold)
+            scores[medium_object_index] *= weight[1]
+            large_object_inedx = area >= self.large_object_threshold
+            scores[large_object_inedx] *= weight[2]
+            pred.add_field("scores", scores)
+        return preds
 
-    def __call__(self, model,images,indexs):
+    def __call__(self, model, images, indexs):
         # TODO VOTING
-        result = []
 
-        images_resized = {i:[] for i,_ in enumerate(self.scales)}
+        images_resized = {i: [] for i, _ in enumerate(self.scales)}
 
-        image_resized_flipped = {i:[] for i,_ in enumerate(self.scales)}
+        images_resized_flipped = {i: [] for i, _ in enumerate(self.scales)}
 
 
-        for i,scale in enumerate(self.scales):
+        for i, scale in enumerate(self.scales):
             for index in indexs:
                 image_meta = self.dataset.get_image_meta(index)
                 image_path = image_meta['file_name']
                 image_path = os.path.join(self.dataset.root, image_path)
-                image_origin = cv2.imread(image_path)
+                image_origin = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
                 image_resized = cv2.resize(image_origin, scale, interpolation=cv2.INTER_LINEAR)
                 image_resized_tensor, _ = ToTensor()(image_resized, None)
-                image_resized[i].append(image_resized_tensor)
+                images_resized[i].append(image_resized_tensor)
 
-                image_resized_fliped, _ = RandomHorizontalFlip(p=1)(image_resized, None)
-                image_resized_fliped_tensor, _ = ToTensor()(image_resized_fliped, None)
-
-        for index in indexs:
-            image_meta = self.dataset.get_image_meta(index)
-            image_path = image_meta['file_name']
-            image_path = os.path.join(self.dataset.root, image_path)
-            image_origin = cv2.imread(image_path)
-
-            image_resized = cv2.resize(image_origin, scale, interpolation=cv2.INTER_LINEAR)
-            image_resized_tensor, _ = ToTensor()(image_resized, None)
-
-            preds = []
-            for i,scale in enumerate(self.scales):
-                image_resized = cv2.resize(image_origin,scale,interpolation=cv2.INTER_LINEAR)
-                image_resized_tensor, _ = ToTensor()(image_resized,None)
-
-                image_resized_tensor = ImageList(image_resized_tensor[None],[(scale[1],scale[0])])
-                image_resized_tensor = image_resized_tensor.to(self.device)
-                [pred], _ = model(image_resized_tensor)
-                pred = map_to_origin_image(image_meta,pred)
-                pred = self.weight_score(self.weights[i],pred)
-                preds.append(pred)
-
-                # Horizontal flip augment
-                image_resized_fliped, _ = RandomHorizontalFlip(p=1)(image_resized,None)
-                image_resized_fliped_tensor, _ = ToTensor()(image_resized_fliped,None)
-                image_resized_fliped_tensor = ImageList(image_resized_fliped_tensor[None],[(scale[1],scale[0])])
-                image_resized_fliped_tensor = image_resized_fliped_tensor.to(self.device)
-                [pred], _ = model(image_resized_fliped_tensor)
-                pred = map_to_origin_image(image_meta,pred,flipmode='h')
-                pred = self.weight_score(self.weights[i],pred)
-                preds.append(pred)
+                image_resized_flipped, _ = RandomHorizontalFlip(p=1)(image_resized, None)
+                image_resized_fliped_tensor, _ = ToTensor()(image_resized_flipped, None)
+                images_resized_flipped[i].append(image_resized_fliped_tensor)
 
 
 
-            preds = cat_boxlist(preds)
+        for i in range(len(self.scales)):
+            resized_batch = images_resized[i][0].new_zeros((len(indexs),)+images_resized[i][0].shape)
+            for img, batch_img in zip(images_resized[i], resized_batch):
+                batch_img.copy_(img)
 
-            preds_nms = boxlist_ml_nms(preds,self.nms_threshold)
-            number_of_detections = len(preds_nms)
+            images_resized[i] = ImageList(resized_batch,
+                                          sizes=images_resized[i][0].shape[-2:])
+
+            resized_flipped_batch = images_resized_flipped[i][0].new_zeros((len(indexs),)+images_resized_flipped[i][0].shape)
+            for img, batch_img in zip(images_resized_flipped[i], resized_flipped_batch):
+                batch_img.copy_(img)
+            images_resized_flipped[i] = ImageList(resized_flipped_batch,
+                                                  sizes=images_resized_flipped[i][0].shape[-2:])
+
+        boxlists = []
+        for i in range(len(self.scales)):
+            resized_preds = model(images_resized[i].to(self.device))
+            resized_preds = self.weight_score(self.weights[i], resized_preds)
+
+            resized_flipped_preds = model(images_resized_flipped[i].to(self.device))
+            resized_flipped_preds = self.weight_score(self.weights[i], resized_flipped_preds)
+            resized_flipped_preds = [pred.transpose(0) for pred in resized_flipped_preds]
+
+            preds = list(zip(*[resized_preds, resized_flipped_preds]))
+            preds = [cat_boxlist(pred) for pred in preds]
+            nms_preds = [boxlist_ml_rnms(pred, self.nms_threshold) for pred in preds]
+            maped_preds = [map_to_origin_image(
+                self.dataset.get_image_meta(indexs[i]), pred) for i, pred in enumerate(nms_preds)]
+
+            boxlists.append(maped_preds)
+        total_boxlists = list(zip(*boxlists))
+
+
+        results = []
+        for boxlist in total_boxlists:
+            nms_preds = boxlist_ml_rnms(boxlist, self.nms_threshold)
+            number_of_detections = len(nms_preds)
 
             # Limit to max_per_image detections **over all classes**
             if number_of_detections > self.fpn_post_nms_top_n > 0:
-                cls_scores = preds_nms.get_field("scores")
+                cls_scores = nms_preds.get_field("scores")
                 image_thresh, _ = torch.kthvalue(
                     cls_scores.cpu(),
                     number_of_detections - self.fpn_post_nms_top_n + 1
                 )
                 keep = cls_scores >= image_thresh.item()
                 keep = torch.nonzero(keep).squeeze(1)
-                preds_nms = preds_nms[keep]
-
-            result.append(preds_nms)
-        return result
-
+                nms_preds = nms_preds[keep]
+            results.append(nms_preds)
+        return results

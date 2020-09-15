@@ -8,7 +8,8 @@ import math
 
 class EfficientDetHead(nn.Module):
 
-    def __init__(self,compound_coef,prior,regression_type,num_anchors=1,num_classes=81,with_centerness=True,):
+    def __init__(self, compound_coef, prior, regression_type,
+                 num_anchors=1, num_classes=81, with_centerness=True,):
         super(EfficientDetHead, self).__init__()
         self.compound_coef = compound_coef
         self.with_centerness = with_centerness
@@ -45,9 +46,9 @@ class EfficientDetHead(nn.Module):
 
 
     def forward(self, inputs):
-        box_regression, centerness = self.regressor(inputs)
+        box_regression, angle, centerness = self.regressor(inputs)
         box_cls = self.classifier(inputs)
-        return (box_cls,box_regression, centerness)
+        return (box_cls, box_regression, centerness, angle)
 
 
 class Regressor(nn.Module):
@@ -70,14 +71,18 @@ class Regressor(nn.Module):
         self.header = SeparableConvBlock(in_channels, num_anchors * 4, norm=False, activation=False)
         if self.with_centerness:
             self.header_centerness = SeparableConvBlock(in_channels, num_anchors * 1, norm=False, activation=False)
+        self.header_angle = SeparableConvBlock(in_channels, num_anchors * 90, norm=False, activation=False)
+
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
         self.scales = nn.ModuleList([Scale(init_value=1.0) for _ in range(5)])
 
     def forward(self, inputs):
         feats = []
+        feats_angle = []
         if self.with_centerness:
             feats_centerness = []
-        for feat, bn_list, scale in zip(inputs, self.bn_list,self.scales):
+
+        for feat, bn_list, scale in zip(inputs, self.bn_list, self.scales):
             for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
                 feat = conv(feat)
                 feat = bn(feat)
@@ -87,12 +92,16 @@ class Regressor(nn.Module):
                 feat_centerness = self.header_centerness(feat)
                 feats_centerness.append(feat_centerness)
 
+
+            feat_angle = self.header_angle(feat)
+            feats_angle.append(feat_angle)
+
             feat = self.header(feat)
             feat = scale(feat)
 
             feats.append(feat)
 
-        return (feats,feats_centerness) if self.with_centerness else (feats,False)
+        return (feats, feats_angle, feats_centerness) if self.with_centerness else (feats, feats_angle, False)
 
 
 class Classifier(nn.Module):

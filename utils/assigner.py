@@ -136,7 +136,7 @@ class Assigner:
         return rounded_targets
 
 
-    def ATSS_assign(self,targets, anchors):
+    def ATSS_assign(self, targets, anchors):
         '''
         Args:
             targets: list(boxlist), gt_bbox for images in batch
@@ -152,8 +152,11 @@ class Assigner:
 
             targets_per_im = targets[im_i]
             assert targets_per_im.mode == 'xywha_d'
+            if len(targets_per_im) == 0:
+                breakpoint = 1
             targets_per_im = self.targets_prepare(targets_per_im)
 
+            xyxyxyxy_bboxes_per_im = targets_per_im.convert('xyxyxyxy').bbox
             bboxes_per_im = targets_per_im.bbox
             labels_per_im = targets_per_im.get_field("labels")
 
@@ -206,10 +209,21 @@ class Assigner:
             e_anchors_cx = anchors_cx_per_im.view(1, -1).expand(num_gt, anchor_num).contiguous().view(-1)
             e_anchors_cy = anchors_cy_per_im.view(1, -1).expand(num_gt, anchor_num).contiguous().view(-1)
             candidate_idxs = candidate_idxs.view(-1)
-            l = e_anchors_cx[candidate_idxs].view(-1, num_gt) - bboxes_per_im[:, 0]
-            t = e_anchors_cy[candidate_idxs].view(-1, num_gt) - bboxes_per_im[:, 1]
-            r = bboxes_per_im[:, 2] - e_anchors_cx[candidate_idxs].view(-1, num_gt)
-            b = bboxes_per_im[:, 3] - e_anchors_cy[candidate_idxs].view(-1, num_gt)
+            l = torch.stack([e_anchors_cx[candidate_idxs].view(-1, num_gt) - xyxyxyxy_bboxes_per_im[:, 0],
+                             e_anchors_cx[candidate_idxs].view(-1, num_gt) - xyxyxyxy_bboxes_per_im[:, 2]], dim=-1)
+            l, _ = torch.min(l, dim=-1)
+            t = torch.stack([e_anchors_cy[candidate_idxs].view(-1, num_gt) - xyxyxyxy_bboxes_per_im[:, 1],
+                             e_anchors_cy[candidate_idxs].view(-1, num_gt) - xyxyxyxy_bboxes_per_im[:, 7]], dim=-1)
+            t, _ = torch.min(t, dim=-1)
+            #t = e_anchors_cy[candidate_idxs].view(-1, num_gt) - bboxes_per_im[:, 1]
+            #r = bboxes_per_im[:, 0] - e_anchors_cx[candidate_idxs].view(-1, num_gt)
+            r = torch.stack([xyxyxyxy_bboxes_per_im[:, 4] - e_anchors_cx[candidate_idxs].view(-1, num_gt),
+                             xyxyxyxy_bboxes_per_im[:, 6] - e_anchors_cx[candidate_idxs].view(-1, num_gt)], dim=-1)
+            r, _ = torch.min(r, dim=-1)
+            #b = bboxes_per_im[:, 1] - e_anchors_cy[candidate_idxs].view(-1, num_gt)
+            b = torch.stack([xyxyxyxy_bboxes_per_im[:, 3] - e_anchors_cy[candidate_idxs].view(-1, num_gt),
+                             xyxyxyxy_bboxes_per_im[:, 5] - e_anchors_cy[candidate_idxs].view(-1, num_gt)], dim=-1)
+            b, _ = torch.min(b, dim=-1)
             is_in_gts = torch.stack([l, t, r, b], dim=1).min(dim=1)[0] > 0.01
             is_pos = is_pos & is_in_gts
 

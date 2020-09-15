@@ -102,12 +102,16 @@ class Gfl_head(nn.Module):
 
         self.add_module('cls_tower', nn.Sequential(*cls_tower))
         self.add_module('bbox_tower', nn.Sequential(*bbox_tower))
-        self.gfl_cls = nn.Conv2d(
+        self.cls_logits = nn.Conv2d(
             in_channels, self.num_anchors* self.n_class, kernel_size=3, stride=1,
             padding=1
         )
-        self.gfl_reg = nn.Conv2d(
-            in_channels,self.num_anchors*4,kernel_size=3,stride=1,
+        self.bbox_pred = nn.Conv2d(
+            in_channels, self.num_anchors*4,kernel_size=3,stride=1,
+            padding=1
+        )
+        self.angle = nn.Conv2d(
+            in_channels, num_anchors * 90, kernel_size=3, stride=1,
             padding=1
         )
         # default: use five levels
@@ -170,23 +174,23 @@ class Gfl_Loss:
         assert not torch.isnan(centerness).any()
         return centerness
 
-    def label_iou_cal(self,anchors,reg_targets,labels):
+    def label_iou_cal(self, anchors, reg_targets, labels):
         labels_iou = []
         for im_i in range(len(anchors)):
 
             anchors_per_im = cat_boxlist(anchors[im_i])
-            label_iou = reg_targets[im_i].new_zeros( (len(anchors_per_im),))
+            label_iou = reg_targets[im_i].new_zeros((len(anchors_per_im),))
 
-            matched_gts_per_im = self.box_coder.decode(reg_targets[im_i],anchors_per_im)
-            matched_gts_per_im = BoxList(matched_gts_per_im,anchors_per_im.size,mode='xyxy')
-            iou = boxlist_iou(anchors_per_im,matched_gts_per_im)
-            pos_inds = labels>0
+            matched_gts_per_im = self.box_coder.decode(reg_targets[im_i], anchors_per_im)
+            matched_gts_per_im = BoxList(matched_gts_per_im, anchors_per_im.size, mode='xywha_d')
+            iou = boxlist_iou(anchors_per_im, matched_gts_per_im)
+            pos_inds = labels > 0
             label_iou[pos_inds] = iou[pos_inds]
 
             labels_iou.append(label_iou)
         return labels_iou
 
-    def quality_focal_loss(self,pred, target, beta=2.0):
+    def quality_focal_loss(self, pred, target, beta=2.0):
         r"""Quality Focal Loss (QFL) is from `Generalized Focal Loss: Learning
         Qualified and Distributed Bounding Boxes for Dense Object Detection
         <https://arxiv.org/abs/2006.04388>`_.
@@ -206,6 +210,7 @@ class Gfl_Loss:
         # label denotes the category id, score denotes the quality score
         label, score = target
 
+        # class-num not include bg
         label[label==0] = self.class_num + 1
         label = label - 1
 
@@ -258,22 +263,27 @@ class Gfl_Loss:
                     classification branch output for every feature level ,
             box_regression : list(tensor) tensor shape (N,4,H,W)
                     localization branch output for every feature level
+            angle: list(tensor) tensor shape (N,90,H,W) angle branch output for every feature level
             taregts: list(boxlist) , boxlist object, ground_truth object for every image,
             anchors: list(list)  [image_1_anchors,...,image_N_anchors],
                     image_i_anchors : [leverl_1_anchor,...,leverl_n_anchor]
                     level_i_anchor:boxlist
         '''
         labels, reg_targets, weights_label = self.assigner(targets, anchors)
+
         N = len(labels) # image_num
 
         # labels_iou : list(tensor) tensor shape (n,) quality score
-        labels_iou = self.label_iou_cal(anchors,reg_targets,labels)
+        labels_iou = self.label_iou_cal(anchors, reg_targets, labels)
 
         box_cls_flatten, box_regression_flatten = concat_box_prediction_layers(box_cls, box_regression)
         labels_iou_flatten = torch.cat(labels_iou, dim=0)
-        labels_flatten = torch.cat(labels,dim=0)
-        reg_targets_flatten = torch.cat(reg_targets, dim=0)
+        labels_flatten = torch.cat(labels, dim=0)
+        #reg_targets_flatten = torch.cat(reg_targets, dim=0)
+        reg_targets_flatten = torch.cat([reg_target[:, :4] for reg_target in reg_targets], dim=0)
+        angel_targets_flatten = torch.cat([reg_target[:, 4] for reg_target in reg_targets], dim=0)
         weights_label_flatten = torch.cat(weights_label, dim=0)
+
         anchors_flatten = torch.cat([cat_boxlist(anchors_per_image).bbox for anchors_per_image in anchors], dim=0)
 
         pos_inds = torch.nonzero(labels_flatten > 0).squeeze(1)
@@ -282,8 +292,8 @@ class Gfl_Loss:
         total_num_pos = reduce_sum(pos_inds.new_tensor([pos_inds.numel()])).item()
         num_pos_avg_per_gpu = max(total_num_pos / float(num_gpus), 1.0)
 
-        cls_loss = self.quality_focal_loss(box_cls_flatten,[labels_flatten,labels_iou_flatten],beta=2.0) \
-                   / num_pos_avg_per_gpu
+        cls_loss = self.quality_focal_loss(box_cls_flatten, [labels_flatten, labels_iou_flatten], beta=2.0) \
+                   /num_pos_avg_per_gpu
 
         if pos_inds.numel() > 0:
             box_regression_flatten = box_regression_flatten[pos_inds]

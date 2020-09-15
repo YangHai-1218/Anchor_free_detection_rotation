@@ -67,3 +67,5 @@ def batched_rnms(bboxes, scores, inds, nms_thresh, class_agnostic=False):
     dets, keep = nms_op(
         torch.cat([bboxes_for_nms, scores[:, None]], -1), nms_thresh)
     return keep
+
+

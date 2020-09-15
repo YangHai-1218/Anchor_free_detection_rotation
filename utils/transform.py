@@ -7,7 +7,7 @@ from torchvision.transforms import functional as F
 import cv2
 import copy
 import math
-from .boxlist import BoxList,boxlist_ioa,cat_boxlist
+from .boxlist import BoxList,boxlist_ioa,cat_boxlist,filter_bboxes
 
 """
 Note this: this data augemenation pipeline is based on cv2, 
@@ -77,7 +77,12 @@ class Resize:
 
         return img, target
 
-
+class Crop:
+    def __call__(self, img, target):
+        img = img[100:500,100:500]
+        target = target.crop([100,100,500,500])
+        target = target.clip_to_image()
+        return img, target
 class Resize_For_Efficientnet:
     """ similar letter box resize implement"""
 
@@ -107,7 +112,7 @@ class Resize_For_Efficientnet:
         new_image[0:resized_height, 0:resized_width] = resized_image
 
         resized_target = target.resize((resized_width, resized_height))
-        target = BoxList(resized_target.bbox, image_size=(self.target_size,) * 2, mode='xyxy')
+        target = BoxList(resized_target.bbox, image_size=(self.target_size,) * 2, mode=resized_target.mode)
         target._copy_extra_fields(resized_target)
         return new_image, target
 
@@ -178,22 +183,37 @@ class RandomVerticalFlip:
         return img, target
 
 
-class RandomRotate90:
-    def __init__(self, p=0.5):
+class RandomRotate:
+    def __init__(self, p=0.5, rotate_time=1):
         self.p = p
+        self.rotate_time = rotate_time
 
     def __call__(self, img, target):
         if random.random() < self.p:
-            img = np.rot90(img)
-            target = target.rotate_90()
-            img = np.ascontiguousarray(img)
+            random_rotate_time = random.choice(list(range(1, self.rotate_time+1)))
+            for i in range(random_rotate_time):
+                img = np.rot90(img)
+                target = target.rotate_90()
+                img = np.ascontiguousarray(img)
         return img, target
+
+
 class ToTensor:
     def __call__(self, img, target):
+        if img.dtype == np.uint16:
+            div_num = 2**16-1
+        elif img.dtype == np.uint8:
+            div_num = 2**8-1
+        elif img.dtype == np.uint32:
+            div_num = 2**32-1
+        elif img.dtype == np.uint64:
+            div_num = 2**64-1
+        else:
+            raise RuntimeError("Not supported data type :{}".format(img.dtype))
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, channel last to channel first
         img = np.ascontiguousarray(img)
         img = torch.from_numpy(img)
-        return img.float().div(255), target
+        return img.float().div(div_num), target
 
 
 class Normalize:
@@ -225,7 +245,7 @@ class RandomMixUp:
         if random.random()>self.p:
             weight = target.bbox.new_ones(len(target))
             target.add_field("weights",weight)
-            return img,target
+            return img, target
         lambd = np.random.beta(self.alpha, self.beta)
         img1 = img
         target1 = target
@@ -284,8 +304,9 @@ class Multi_Scale_with_Crop:
                 resized_width = self.long_edge
 
         #print('resized_width:',resized_width,'resized_height:',resized_height)
-        resized_image = cv2.resize(img,(resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+        resized_image = cv2.resize(img, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
         resized_target = target.resize((resized_width, resized_height))
+
 
         pad_w = self.target_size[0] - resized_width if self.target_size[0] > resized_width else 0
         pad_h = self.target_size[1] - resized_height if self.target_size[1] > resized_height else 0
@@ -295,16 +316,50 @@ class Multi_Scale_with_Crop:
         new_image[:, :, 2] = self.color[2]
         new_image[0:resized_height, 0:resized_width] = resized_image
 
-        left_x = random.randint(0, resized_width + pad_w-self.target_size[0])
-        top_y = random.randint(0, resized_height + pad_h-self.target_size[1])
-        right_x = left_x + self.target_size[0]
-        bottom_y = top_y+self.target_size[1]
 
-        croped_image = new_image[top_y:bottom_y,left_x:right_x]
-        croped_target = resized_target.crop([left_x,top_y,right_x,bottom_y])
+        #determine crop area
+        left_x = resized_width + pad_w
+        top_y = resized_height + pad_h
+        right_x = left_x + self.target_size[0]
+        bottom_y = top_y + self.target_size[1]
+
+
+        repeat_max_time = 20
+        repeat_time = 0
+        while (resized_target.bbox[:, 0] - 30 - left_x).sum() <= 0 \
+            or (resized_target.bbox[:, 1] - 30 - top_y).sum() <= 0 \
+            or (resized_target.bbox[:, 0] - right_x).sum() >= 0 \
+            or (resized_target.bbox[:, 1] - bottom_y).sum() >= 0 :
+
+            if repeat_time >=repeat_max_time:
+                break
+            left_x = random.randint(0, resized_width + pad_w-self.target_size[0])
+            top_y = random.randint(0, resized_height + pad_h-self.target_size[1])
+            right_x = left_x + self.target_size[0]
+            bottom_y = top_y + self.target_size[1]
+
+            repeat_time += 1
+
+        if repeat_time >= repeat_max_time:
+            croped_image = cv2.resize(new_image, self.target_size, interpolation=cv2.INTER_LINEAR)
+            croped_target = resized_target.resize(self.target_size)
+            return croped_image, croped_target
+
+        croped_image = new_image[top_y:bottom_y, left_x:right_x]
+        croped_target = resized_target.crop([left_x, top_y, right_x,bottom_y])
+
+        try:
+            croped_target = filter_bboxes(resized_target, croped_target, [left_x,top_y,right_x,bottom_y],
+                                            keep_best_ioa=True)
+        except:
+            croped_image = cv2.resize(new_image, self.target_size, interpolation=cv2.INTER_LINEAR)
+            croped_target = resized_target.resize(self.target_size)
+            return croped_image, croped_target
+
+
         croped_target = croped_target.clip_to_image(remove_empty=True)
 
-        return croped_image,croped_target
+        return croped_image, croped_target
 
 
 
@@ -326,30 +381,33 @@ class Cutout:
 
 
         height,width,_ = img.shape
-        scales = [0.5] * 1 + [0.25] * 2 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16
+        scales = [0.25] * 1 + [0.125] * 4 + [0.0625] * 8 + [0.03125] * 16
 
         for s in scales:
             mask_h = random.randint(1, int(height * s))
             mask_w = random.randint(1, int(width* s))
 
             # box
-            xmin = max(0, random.randint(0, height) - mask_w // 2)
-            ymin = max(0, random.randint(0, width) - mask_h // 2)
+            xmin = max(0, random.randint(0, width) - mask_w // 2)
+            ymin = max(0, random.randint(0, height) - mask_h // 2)
             xmax = min(width, xmin + mask_w)
             ymax = min(height, ymin + mask_h)
+            if xmin == xmax or ymin == ymax:
+                continue
 
-            # apply random color mask
-            img[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]
 
-            # select unobscured target box
-            if len(target)> 0:
-                mask_box = torch.tensor([xmin,ymin,xmax,ymax])[None,:]
-                mask_box = BoxList(mask_box,image_size=(width,height),mode='xyxy')
-                ioa = boxlist_ioa(mask_box,target).squeeze()
+            target_bak = copy.deepcopy(target)
+            mask_box = torch.tensor([xmin, ymin, xmin, ymax, xmax, ymax, xmax, ymin])[None, :]
+            mask_box = BoxList(mask_box, image_size=(width, height), mode='xyxyxyxy')
+            ioa = boxlist_ioa(mask_box, target).squeeze()
+            target = target[(ioa < 0.6).reshape(-1)]
+            if len(target) <= 0:
+                return img, target_bak
+            else:
+                # apply random color mask
+                img[ymin:ymax, xmin:xmax] = [random.randint(64, 191) for _ in range(3)]
 
-                target = target[(ioa<0.6).reshape(-1)]
-
-        return img,target
+        return img, target
 
 class Mosaic:
     """ https://arxiv.org/abs/1905.04899
@@ -394,10 +452,9 @@ class Mosaic:
             padh = y1a - y1b
 
             if len(target) > 0:
-                target.bbox[:,0] = target.bbox[:,0] + padw
-                target.bbox[:,1] = target.bbox[:,1] + padh
-                target.bbox[:,2] = target.bbox[:,2] + padw
-                target.bbox[:,3] = target.bbox[:,3] + padh
+                assert target.mode == 'xywha' or target.mode == 'xywha_d'
+                target.bbox[:, 0] = target.bbox[:, 0] + padw
+                target.bbox[:, 1] = target.bbox[:, 1] + padh
                 target.size = self.image_size
             labels4.append(target)
 
@@ -405,15 +462,17 @@ class Mosaic:
         labels4 = cat_boxlist(labels4)
         # image_box = [self.image_size[0] // 2, self.image_size[1] // 2,
         #              self.image_size[0] // 2 + self.image_size[0], self.image_size[1] // 2 + self.image_size[1]]
-        image_box = [x_left,y_top,x_right,y_bottom]
-        labels4 = labels4.crop(image_box)
-        labels4 = labels4.clip_to_image(remove_empty=True)
-        img4 = img4[image_box[1]:image_box[3],image_box[0]:image_box[2],:]
+        image_box = [x_left, y_top, x_right, y_bottom]
+        cropped_labels4 = labels4.crop(image_box)
+        cropped_labels4 = filter_bboxes(labels4, cropped_labels4, image_box)
+        cropped_labels4 = cropped_labels4.clip_to_image(remove_empty=True)
+
+        img4 = img4[image_box[1]:image_box[3], image_box[0]:image_box[2], :]
 
 
         print(img4.shape)
-        print(labels4.size)
-        return img4,labels4
+        print(cropped_labels4.size)
+        return img4, cropped_labels4
 
 
 
@@ -526,22 +585,24 @@ def test():
     from tools.visualize import draw_ploygon_bbox_text,COLOR_TABLE
     from torchvision import transforms
 
-    dataset = DOTADataset('/Users/haiyang/Documents/03data/DOTA-v1.5', split='val', image_folder_name='images_',
-                          anno_folder_name='annotations_')
+    dataset = DOTADataset('data/', split='train', image_folder_name='min_split_',
+                          anno_folder_name='annotations_split_')
+    # dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5', split='train', image_folder_name='min_split_',
+    #                       anno_folder_name='annotations_split_')
 
     transform = Compose(
         [
-            # RandomHSV(0.1,0.1,0.1),
+            RandomHSV(0.1,0.1,0.1),
             # RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
             RandomHorizontalFlip(1),
             RandomVerticalFlip(1),
-            RandomRotate90(1),
+            RandomRotate(1, rotate_time=4),
+            #RandomMixUp(dataset),
+            Cutout(0.9),
+            #Resize_For_Efficientnet(compund_coef=2),
+            #Mosaic(image_size=(768,768),dataset=dataset),
             # Resize_For_Efficientnet(compund_coef=2),
-            # Cutout(0.9),
-            # Mosaic(image_size=(768,768),dataset=dataset),
-            # Resize_For_Efficientnet(compund_coef=2),
-            # Multi_Scale_with_Crop(scales=[512,640,960,1280],target_size=(640,960)),
-            # RandomMixUp(dataset),
+            Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152],target_size=(768, 768)),
             ToTensor(),
             # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
         ])
@@ -564,25 +625,17 @@ def test():
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         return image
 
-    for i in range(0, 100):
+    for i in range(0, 400):
+        #i = random.choice(list(range(0,len(dataset))))
         img_origin, targets_origin, _ = dataset[i]
-
-        # randomhsv = RandomHSV(0.5,0.5,0.5)
-        # img,_ = randomhsv(img_origin,targets)
-        # randomaffine = RandomAffine(degrees=1.98,translate=0.05 * 0,scale=0.8,shear=0.641 * 0)
-        # img,targets_new = randomaffine(img_origin,targets)
-        # resize = Resize_For_Efficientnet(2)
-        # img,targets_new = resize(img_origin,targets)
-        # flip = RandomHorizontalFlip()
-        # img,targets_new = flip(img_origin,targets)
-        # flip = RandomVerticalFlip()
-        # img_new,targets_new = flip(img_origin,targets_origin)
 
         # img_origin = plot_targets(img_origin, targets_origin)
         img_new, targets_new = transform(img_origin, targets_origin)
-        print(f'image_size:{img_new.size()}')
+        if len(targets_new) == 0:
+            breakpoint = 1
+        # print(f'image_size:{img_new.size()}')
         print(f'new_targets:{targets_new}')
-        print(f'original_targets:{targets_origin}')
+        # print(f'original_targets:{targets_origin}')
 
         # cv2.imshow('image_origin', img_origin)
         # cv2.waitKey()
@@ -592,10 +645,11 @@ def test():
         # #img_combine = np.hstack((img,img_origin))
 
 
-        # print(targets_new)
-        img_new = transforms.ToPILImage()(img_new).convert('RGB')
-        plot_targets_PIL(img_new, targets_new, dataset)
-        img_new.show()
+        print(targets_new)
+        # img_new = transforms.ToPILImage()(img_new).convert('RGB')
+        # plot_targets_PIL(img_new, targets_new, dataset)
+        # img_new.show()
+        breakpoint =1
 
 
 if __name__ == '__main__':

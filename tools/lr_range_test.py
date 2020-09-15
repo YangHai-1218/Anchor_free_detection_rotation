@@ -11,7 +11,7 @@ from distributed import (
     DistributedSampler,
     get_world_size,
 )
-from utils.dataset import DIORdataset,collate_fn
+from utils import DOTADataset,collate_fn,transform
 from utils import transform
 from torch.utils.data import DataLoader, sampler
 from train import data_sampler

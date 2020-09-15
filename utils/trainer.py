@@ -43,14 +43,14 @@ class Trainer:
         self.n_gpu = args.n_gpu
         self.batch = args.batch
 
-    def __call__(self, model, epoch,optimizer,scheduler=None,logger=None,ema=None):
+    def train(self, model, epoch, optimizer, scheduler=None, logger=None, ema=None):
         '''
         scheduler:[ scheduler, warmup scheduler]
         '''
         epoch_loss = []
         model.train()
 
-        scheduler,warmup_scheduler = scheduler[0],scheduler[1]
+        scheduler, warmup_scheduler = scheduler[0], scheduler[1]
 
         if get_rank() == 0:
             pbar = tqdm(enumerate(self.loader), total=len(self.loader), dynamic_ncols=True)
@@ -61,11 +61,7 @@ class Trainer:
 
             model.zero_grad()
 
-            gt_exist = True
-            for target in targets:
-                gt_exist = gt_exist and len(target)
-            if not gt_exist:
-                continue
+
             images = images.to(self.device)
             targets = [target.to(self.device) for target in targets]
 
@@ -73,8 +69,9 @@ class Trainer:
             loss_cls = loss_dict['loss_cls'].mean()
             loss_box = loss_dict['loss_reg'].mean()
             loss_center = loss_dict['loss_centerness'].mean()
+            loss_angle = loss_dict['loss_angle'].mean()
 
-            loss = loss_cls + loss_box + loss_center
+            loss = loss_cls + loss_box + loss_center + loss_angle
 
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 10)
@@ -97,7 +94,8 @@ class Trainer:
                 pbar.set_description(
                     (
                         f'epoch: {epoch + 1}; cls: {loss_cls:.4f}; '
-                        f'box: {loss_box:.4f}; center: {loss_center:.4f}'
+                        f'box: {loss_box:.4f}; center: {loss_center:.4f} '
+                        f'angle:{loss_angle:.4f}'
                     )
                 )
 
@@ -108,6 +106,7 @@ class Trainer:
                     logger.add_scalar('training/loss_cls', loss_cls, totalStep)
                     logger.add_scalar('training/loss_box', loss_box, totalStep)
                     logger.add_scalar('training/loss_center', loss_center, totalStep)
+                    logger.add_scalar('training/loss_angle', loss_angle, totalStep)
                     logger.add_scalar('training/loss_all', (loss_cls + loss_box + loss_center), totalStep)
                     logger.add_scalar('learning_rate', lr_rate, totalStep)
 
@@ -162,7 +161,7 @@ class Tester:
             if ema: ema.apply_shadow()
 
             if self.multi_scale_test:
-                pred = self.multi_scale_tester(model,images,ids)
+                pred = self.multi_scale_tester(model, images, ids)
             else:
                 pred, _ = model(images)
 

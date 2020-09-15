@@ -47,32 +47,35 @@ class SigmoidFocalLoss(nn.Module):
         return loss.sum()
 
 class GIoULoss(nn.Module):
-    def __init__(self):
-        super(GIoULoss,self).__init__()
+    def __init__(self, coder):
+        super(GIoULoss, self).__init__()
+        self.box_coder = coder
 
     def forward(self, pred, target, anchor, weight):
         '''
         Args:
-            pred tensor shape (N,4) N is the number of positive sample, localization branch output
+            pred tensor shape (N,4) N is the number of positive sample, localization branch output,
             target tensor shape (N,4) after coder.encode(gt_bbox,anchors)
             anchor tensor shape (N.4)
             weight tensor shape (N) if mixup , then the weight might <1. No mixup , weight = 1
         '''
-        pred_boxes = self.box_coder.decode(pred.view(-1, 4), anchor.view(-1, 4))
-        pred_x1 = pred_boxes[:, 0]
-        pred_y1 = pred_boxes[:, 1]
-        pred_x2 = pred_boxes[:, 2]
-        pred_y2 = pred_boxes[:, 3]
-        pred_x2 = torch.max(pred_x1, pred_x2)
-        pred_y2 = torch.max(pred_y1, pred_y2)
-        pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+        pred_with_angel = torch.cat([pred.view(-1, 4), pred.new_zeros((pred.shape[0], 1))], dim=-1)
+        pred_boxes = self.box_coder.decode(pred_with_angel.view(-1, 5), anchor.view(-1, 5))
+        pred_x1 = pred_boxes[:, 0] - pred_boxes[:, 2]/2
+        pred_y1 = pred_boxes[:, 1] - pred_boxes[:, 3]/2
+        pred_x2 = pred_boxes[:, 0] + pred_boxes[:, 2]/2
+        pred_y2 = pred_boxes[:, 1] + pred_boxes[:, 3]/2
 
-        gt_boxes = self.box_coder.decode(target.view(-1, 4), anchor.view(-1, 4))
-        target_x1 = gt_boxes[:, 0]
-        target_y1 = gt_boxes[:, 1]
-        target_x2 = gt_boxes[:, 2]
-        target_y2 = gt_boxes[:, 3]
-        target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
+        pred_area = pred_boxes[:, 2] * pred_boxes[:, 3]
+
+        target_with_angle = torch.cat([target.view(-1, 4), target.new_zeros((target.shape[0], 1))], dim=-1)
+
+        gt_boxes = self.box_coder.decode(target_with_angle.view(-1, 5), anchor.view(-1, 5))
+        target_x1 = gt_boxes[:, 0] - gt_boxes[:, 2]/2
+        target_y1 = gt_boxes[:, 1] - gt_boxes[:, 3]/2
+        target_x2 = gt_boxes[:, 0] + gt_boxes[:, 2]/2
+        target_y2 = gt_boxes[:, 1] + gt_boxes[:, 3]/2
+        target_area = gt_boxes[:, 2] * gt_boxes[:, 3]
 
         x1_intersect = torch.max(pred_x1, target_x1)
         y1_intersect = torch.max(pred_y1, target_y1)

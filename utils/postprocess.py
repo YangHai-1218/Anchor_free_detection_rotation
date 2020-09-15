@@ -17,7 +17,6 @@ class ATSSPostProcessor(nn.Module):
         bbox_aug_vote=False,
         multi_scale_test=True,
         bbox_voting_threshold=0,
-        bbox_aug_enabled=False,
     ):
         super(ATSSPostProcessor, self).__init__()
         self.pre_nms_thresh = pre_nms_thresh
@@ -26,7 +25,6 @@ class ATSSPostProcessor(nn.Module):
         self.fpn_post_nms_top_n = fpn_post_nms_top_n
         self.min_size = min_size
         self.num_classes = num_classes
-        self.bbox_aug_enabled = bbox_aug_enabled
         self.box_coder = box_coder
         self.bbox_aug_vote = bbox_aug_vote
         self.bbox_voting_threshold = bbox_voting_threshold
@@ -58,7 +56,8 @@ class ATSSPostProcessor(nn.Module):
 
         # angle (N,anchor_featuremap,90)
         box_angle = permute_and_flatten(angle, N, A, 90, H, W)
-        box_angle = angle.reshape(N, -1, 90).softmax(dim=-1)
+        box_angle = box_angle.reshape(N, -1, 90).softmax(dim=-1)
+        box_angle = torch.softmax(box_angle, dim=-1)
 
         # filter some anchors using nms_thresh(inference threshold)
         # candidate_inds (N,anchors_feature_map,class_num)
@@ -134,6 +133,9 @@ class ATSSPostProcessor(nn.Module):
                 list [ima1_anchor,...imageN_anchors]
                 imgi_anchor: list[p3_anchors,p4_anchors,p5_anchors,p6_anchors,p7_anchors]
                 pi_anchors: Boslist object
+
+        Return:
+            boxlists: list(boxlist) predicted result for every image
         '''
         sampled_boxes = []
         anchors = list(zip(*anchors))
@@ -253,8 +255,7 @@ class GflPostProcesser(ATSSPostProcessor):
                  box_coder,
                  bbox_aug_vote=False,
                  multi_scale_test=True,
-                 bbox_voting_threshold=0,
-                 bbox_aug_enabled=False,
+                 bbox_voting_threshold=0
                  ):
         super(GflPostProcesser,self).__init__(pre_nms_thresh,
                  pre_nms_top_n,
@@ -265,8 +266,7 @@ class GflPostProcesser(ATSSPostProcessor):
                  box_coder,
                  bbox_aug_vote=False,
                  multi_scale_test=True,
-                 bbox_voting_threshold=0,
-                 bbox_aug_enabled=False)
+                 bbox_voting_threshold=0)
 
     def forward_for_single_feature_map(self, box_cls, box_regression, centerness, anchors):
         N, _, H, W = box_cls.shape

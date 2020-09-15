@@ -1,9 +1,7 @@
 import json
 import os
-import cv2
 import glob
-import numpy as np
-
+import cv2
 
 annotations_info = {'images': [], 'annotations': [], 'categories': []}
 
@@ -16,18 +14,9 @@ CLASS_NAME = ('__background__','plane', 'baseball-diamond', 'bridge', 'ground-tr
                 'swimming-pool', 'helicopter')
 
 categories_map = {class_name:i for i,class_name in enumerate(CLASS_NAME)}
-del categories_map['__background__']
-for key in categories_map:
-    categoriy_info = {"id":categories_map[key], "name":key}
-    annotations_info['categories'].append(categoriy_info)
-
 image_root = '/Volumes/hy_mobile/03data/DOTA-v1.5/min_split_val'
-annotation_root = '/Volumes/hy_mobile/03data/DOTA-v1.5/min_anno_split_val'
 json_annotation_path = '/Volumes/hy_mobile/03data/DOTA-v1.5/annotations/annotations_split_val.json'
-
-
 image_file_paths = glob.glob(image_root+'/*.png')
-annotation_file_paths = glob.glob(annotation_root+'/*.txt')
 
 ann_id = 1
 
@@ -40,30 +29,15 @@ for i, image_file_path in enumerate(image_file_paths):
                   'height': height, 'width': width}
     annotations_info['images'].append(image_info)
 
-    annotation_file_path = os.path.join(annotation_root, image_name+'.txt')
-    with open(annotation_file_path) as f:
-        lines = f.readlines()
-        # gsd = lines[1].split(':')[-1]
-        # lines = lines[2:]
-        for line in lines:
-            bbox_info = line.split()
-            bbox = bbox_info[:8]
-            bbox = [*map(lambda x: float(x), bbox)]
-            cls_name = bbox_info[8]
-            if cls_name in categories_map:
-                category_id = categories_map[cls_name]
-            else:
-                continue
+    annotation_info = {"id": i+1, "image_id":i+1,
+                       "bbox": [10, 30, 10, 60, 40, 30, 40, 60],
+                       "category_id": 1,
+                       "area": 900,
+                       "iscrowd": 0}
+    annotations_info['annotations'].append(annotation_info)
 
-            rbbox = cv2.minAreaRect(np.array(bbox).reshape((4, 2)).astype(np.float32))
-            area = rbbox[1][0] * rbbox[1][1]
-            annotation_info = {"id": ann_id, "image_id": i+1,
-                               "bbox": bbox, "category_id": category_id,
-                               "area": area, "iscrowd": 0}
 
-            annotations_info['annotations'].append(annotation_info)
-
-            ann_id += 1
+    ann_id += 1
 
 with open(json_annotation_path, 'w') as f:
     json.dump(annotations_info, f, indent=4)
@@ -72,7 +46,3 @@ print('---整理后的标注文件---')
 print('所有图片的数量：',  len(annotations_info['images']))
 print('所有标注的数量：',  len(annotations_info['annotations']))
 print('所有类别的数量：',  len(annotations_info['categories']))
-
-
-
-

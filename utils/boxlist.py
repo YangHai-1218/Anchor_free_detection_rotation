@@ -3,8 +3,8 @@ import cv2
 import numpy as np
 import math
 import copy
-#from ops import batched_rnms, rnms
-#from ops import polygon_iou
+from ops import batched_rnms, rnms
+from ops import polygon_iou
 
 FLIP_LEFT_RIGHT = 0
 FLIP_TOP_BOTTOM = 1
@@ -83,8 +83,7 @@ class BoxList(object):
             if self.mode == 'xywha':
                 return self.xywha_to_xyxyxyxy()
             elif self.mode == 'xywha_d':
-                bbox = self.convert("xywha")
-                return bbox.convert('xyxyxyxy')
+                return self.xywhad_to_xyxyxyxy()
             else:
                 raise RuntimeError("Should not be here")
         elif mode == 'xywha':
@@ -109,39 +108,90 @@ class BoxList(object):
         if self.mode == 'xywha' or self.mode == 'xywha_d':
             print("'{} mode don't have to change point order".format(self.mode))
             return self
-        clockwise_bbox = []
-        for bbox in self.bbox:
-            clockwise_points = []
-            p1, p2, p3, p4 = bbox[:2], bbox[2:4], bbox[4:6], bbox[6:8]
-            points = torch.stack([p1, p2, p3, p4],dim=0)
-            x = torch.tensor([p1[0], p2[0], p3[0], p4[0]])
-            _, index = x.sort()
-            left_points = points[index[:2]]
-            right_points = points[index[2:]]
-            if left_points[0, 1] < left_points[1, 1]:
-                clockwise_points.extend([left_points[0, :], left_points[1, :]])
-            else:
-                clockwise_points.extend([left_points[1, :], left_points[0, :]])
 
-            if right_points[0, 1] > right_points[1, 1]:
-                clockwise_points.extend([right_points[0, :], right_points[1, :]])
-            else:
-                clockwise_points.extend([right_points[1, :], right_points[0, :]])
+        # clockwise_bbox = []
+        # for bbox in self.bbox:
+        #     clockwise_points = []
+        #
+        #     p1, p2, p3, p4 = bbox[:2], bbox[2:4], bbox[4:6], bbox[6:8]
+        #     points = torch.stack([p1, p2, p3, p4], dim=0)
+        #     x = torch.tensor([p1[0], p2[0], p3[0], p4[0]])
+        #     _, index = x.sort()
+        #     left_points = points[index[:2]]
+        #     right_points = points[index[2:]]
+        #     if left_points[0, 1] < left_points[1, 1]:
+        #         clockwise_points.extend([left_points[0, :], left_points[1, :]])
+        #     else:
+        #         clockwise_points.extend([left_points[1, :], left_points[0, :]])
+        #
+        #     if right_points[0, 1] > right_points[1, 1]:
+        #         clockwise_points.extend([right_points[0, :], right_points[1, :]])
+        #     else:
+        #         clockwise_points.extend([right_points[1, :], right_points[0, :]])
+        #
+        #     clockwise_points = torch.cat(clockwise_points, dim=0)
+        #     clockwise_bbox.append(clockwise_points)
+        # clockwise_bbox = torch.stack(clockwise_bbox, dim=0).reshape((-1, 8)).to(self.bbox.dtype)
+        # clockwise_bbox = BoxList(clockwise_bbox, image_size=self.size, mode='xyxyxyxy')
+        # clockwise_bbox._copy_extra_fields(self)
+        # #return clockwise_bbox
 
-            clockwise_points = torch.cat(clockwise_points, dim=0)
-            clockwise_bbox.append(clockwise_points)
+        _, right_points_index = self.bbox[:, 0:8:2].topk(k=2, dim=-1, largest=True)
+        left_points_index = 3 - right_points_index
+        index_temp = ((right_points_index - torch.tensor([1, 2]).to(self.device)).sum(dim=-1) == 0) | \
+                     ((right_points_index - torch.tensor([2, 1]).to(self.device)).sum(dim=-1) == 0)
+        left_points_index[index_temp] = torch.tensor([0, 3]).to(self.device)
 
-        clockwise_bbox = torch.stack(clockwise_bbox,dim=0).to(self.device)
-        clockwise_bbox = BoxList(clockwise_bbox,image_size=self.size,mode='xyxyxyxy')
-        clockwise_bbox._copy_extra_fields(self)
-        return clockwise_bbox
+        index_temp = (((right_points_index - torch.tensor([0, 3]).to(self.device)).sum(dim=-1) == 0) | \
+                     ((right_points_index - torch.tensor([3, 0]).to(self.device)).sum(dim=-1) == 0)) & (~ index_temp)
+        left_points_index[index_temp] = torch.tensor(([1, 2])).to(self.device)
+        left_points1 = torch.cat([torch.gather(self.bbox, 1, (left_points_index[:, 0]*2).view(-1, 1)),
+                                torch.gather(self.bbox, 1, (left_points_index[:, 0]*2+1).view(-1, 1))],
+                                dim=-1)
+        left_points2 = torch.cat([torch.gather(self.bbox, 1, (left_points_index[:, 1]*2).view(-1, 1)),
+                                torch.gather(self.bbox, 1, (left_points_index[:, 1]*2+1).view(-1, 1))],
+                                dim=-1)
+        left_points = torch.cat([left_points1, left_points2], dim=-1)
+        _, left_upper_points_index = left_points[:, 1:4:2].topk(k=2, dim=-1, largest=False)
+        left_upper_points = torch.cat([torch.gather(left_points, 1, (left_upper_points_index[:, 0]*2).view(-1, 1)),
+                                       torch.gather(left_points, 1, (left_upper_points_index[:, 0]*2+1).view(-1, 1))],
+                                      dim=-1)
+        left_bottom_points = torch.cat([torch.gather(left_points, 1, (left_upper_points_index[:, 1] * 2).view(-1, 1)),
+                                       torch.gather(left_points, 1, (left_upper_points_index[:, 1] * 2 + 1).view(-1, 1))],
+                                       dim=-1)
+
+        right_points1 = torch.cat([torch.gather(self.bbox, 1, (right_points_index[:, 0] * 2).view(-1, 1)),
+                                  torch.gather(self.bbox, 1, (right_points_index[:, 0] * 2 + 1).view(-1, 1))],
+                                 dim=-1)
+        right_points2 = torch.cat([torch.gather(self.bbox, 1, (right_points_index[:, 1] * 2).view(-1, 1)),
+                                  torch.gather(self.bbox, 1, (right_points_index[:, 1] * 2 + 1).view(-1, 1))],
+                                 dim=-1)
+        right_points = torch.cat([right_points1, right_points2], dim=-1)
+        _, right_upper_points_index = right_points[:, 1:4:2].topk(k=2, dim=-1, largest=False)
+        right_upper_points = torch.cat([torch.gather(right_points, 1,(right_upper_points_index[:, 0] * 2).view(-1, 1)),
+                                       torch.gather(right_points, 1, (right_upper_points_index[:, 0] * 2 + 1).view(-1, 1))],
+                                      dim=-1)
+        right_bottom_points = torch.cat([torch.gather(right_points, 1, (right_upper_points_index[:, 1] * 2).view(-1, 1)),
+                                        torch.gather(right_points, 1, (right_upper_points_index[:, 1] * 2 + 1).view(-1, 1))],
+                                       dim=-1)
+
+        clock_wise_points = torch.cat([left_upper_points, left_bottom_points, right_bottom_points, right_upper_points],
+                                        dim=-1)
+        clockwise_box = BoxList(clock_wise_points.reshape(-1, 8), image_size=self.size, mode='xyxyxyxy')
+        clockwise_box._copy_extra_fields(self)
+        # if (clockwise_box.bbox - clockwise_bbox.bbox).sum() > 0:
+        #     breakpoint =1
+        return clockwise_box
+
+
 
 
 
 
     def _split_into_xyxyxyxy(self):
         if self.mode == "xyxyxyxy":
-            x1, y1, x2, y2, x3, y3, x4, y4 = self.bbox.split(1, dim=-1)
+
+            x1, y1, x2, y2, x3, y3, x4, y4 = self.change_order_to_clockwise().bbox.split(1, dim=-1)
             return x1, y1, x2, y2, x3, y3, x4, y4
         elif self.mode == "xywha":
             xyxyxyxy_bbox = self.convert('xyxyxyxy')
@@ -168,14 +218,16 @@ class BoxList(object):
         ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(size, self.size))
         if ratios[0] == ratios[1]:
             ratio = ratios[0]
-            scaled_box = self.bbox * ratio
-            bbox = BoxList(scaled_box, size, mode=self.mode)
+            bbox = self._split_into_xyxyxyxy()
+            bbox = torch.cat(bbox,dim=-1)
+            scaled_box = bbox * ratio
+            bbox = BoxList(scaled_box, size, mode='xyxyxyxy')
             # bbox._copy_extra_fields(self)
             for k, v in self.extra_fields.items():
                 if not isinstance(v, torch.Tensor):
                     v = v.resize(size, *args, **kwargs)
                 bbox.add_field(k, v)
-            return bbox
+            return bbox.convert(self.mode)
 
         ratio_width, ratio_height = ratios
         x1, y1, x2, y2, x3, y3, x4, y4 = self._split_into_xyxyxyxy()
@@ -191,12 +243,12 @@ class BoxList(object):
             (scaled_x1, scaled_y1, scaled_x2, scaled_y2, scaled_x3, scaled_y3, scaled_x4, scaled_y4), dim=-1
         )
         bbox = BoxList(scaled_box, size, mode="xyxyxyxy")
+        bbox = bbox.change_order_to_clockwise()
         # bbox._copy_extra_fields(self)
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.resize(size, *args, **kwargs)
             bbox.add_field(k, v)
-
         return bbox.convert(self.mode)
 
     def transpose(self, method):
@@ -213,38 +265,78 @@ class BoxList(object):
             )
 
         image_width, image_height = self.size
-        x1, y1, x2, y2, x3, y3, x4, y4 = self._split_into_xyxyxyxy()
-        if method == FLIP_LEFT_RIGHT:
-            TO_REMOVE = 1
-            transposed_x1 = image_width - x1 - TO_REMOVE
-            transposed_x2 = image_width - x2 - TO_REMOVE
-            transposed_x3 = image_width - x3 - TO_REMOVE
-            transposed_x4 = image_width - x4 - TO_REMOVE
-            transposed_y1 = y1
-            transposed_y2 = y2
-            transposed_y3 = y3
-            transposed_y4 = y4
-        elif method == FLIP_TOP_BOTTOM:
-            transposed_x1 = x1
-            transposed_x2 = x2
-            transposed_x3 = x3
-            transposed_x4 = x4
-            transposed_y1 = image_height - y1
-            transposed_y2 = image_height - y2
-            transposed_y3 = image_height - y3
-            transposed_y4 = image_height - y4
+        if self.mode == 'xywha_d':
+            xc, yc, w, h, a = self.bbox.split(1,dim=1)
+            if method == FLIP_LEFT_RIGHT:
+                TO_REMOVE = 1
+                transposed_xc = image_width - xc - TO_REMOVE
+                transposed_yc = yc
+                transposed_w = h
+                transposed_h = w
+                transposed_a = -90 - a
+            if method == FLIP_TOP_BOTTOM:
+                transposed_xc = xc
+                transposed_yc = image_height - yc
+                transposed_w = h
+                transposed_h = w
+                transposed_a = -90 - a
+            transposed_boxes = torch.cat(
+                (transposed_xc, transposed_yc, transposed_w, transposed_h, transposed_a), dim=-1
+            )
+            transposed_boxes = BoxList(transposed_boxes, image_size=self.size, mode='xywha_d')
+        elif self.mode == 'xywha':
+            xc, yc, w, h, a = self.bbox.split(1,dim=1)
+            if method == FLIP_LEFT_RIGHT:
+                TO_REMOVE = 1
+                transposed_xc = image_width - xc - TO_REMOVE
+                transposed_yc = yc
+                transposed_w = h
+                transposed_h = w
+                transposed_a = -math.pi/2 - a
+            if method == FLIP_TOP_BOTTOM:
+                transposed_xc = xc
+                transposed_yc = image_height - yc
+                transposed_w = h
+                transposed_h = w
+                transposed_a = -math.pi/2 - a
+            transposed_boxes = torch.cat(
+                (transposed_xc, transposed_yc, transposed_w, transposed_h,transposed_a), dim=-1
+            )
+            transposed_boxes = BoxList(transposed_boxes, self.size, mode="xywha")
+        else:
+            x1, y1, x2, y2, x3, y3, x4, y4 = self.bbox.split(1,dim=1)
+            if method == FLIP_LEFT_RIGHT:
+                TO_REMOVE = 1
+                transposed_x1 = image_width - x1 - TO_REMOVE
+                transposed_x2 = image_width - x2 - TO_REMOVE
+                transposed_x3 = image_width - x3 - TO_REMOVE
+                transposed_x4 = image_width - x4 - TO_REMOVE
+                transposed_y1 = y1
+                transposed_y2 = y2
+                transposed_y3 = y3
+                transposed_y4 = y4
+            elif method == FLIP_TOP_BOTTOM:
+                transposed_x1 = x1
+                transposed_x2 = x2
+                transposed_x3 = x3
+                transposed_x4 = x4
+                transposed_y1 = image_height - y1
+                transposed_y2 = image_height - y2
+                transposed_y3 = image_height - y3
+                transposed_y4 = image_height - y4
 
-        transposed_boxes = torch.cat(
-            (transposed_x1, transposed_y1, transposed_x2, transposed_y2, transposed_x3, transposed_y3,
-             transposed_x4, transposed_y4), dim=-1
-        )
-        bbox = BoxList(transposed_boxes, self.size, mode="xyxyxyxy")
+            transposed_boxes = torch.cat(
+                (transposed_x1, transposed_y1, transposed_x2, transposed_y2, transposed_x3, transposed_y3,
+                 transposed_x4, transposed_y4), dim=-1
+            )
+            transposed_boxes = BoxList(transposed_boxes, self.size, mode="xyxyxyxy")
         # bbox._copy_extra_fields(self)
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.transpose(method)
-            bbox.add_field(k, v)
-        return bbox.convert(self.mode)
+            transposed_boxes.add_field(k, v)
+        return transposed_boxes
+
 
     def rotate_90(self):
         '''
@@ -265,41 +357,90 @@ class BoxList(object):
         return rotated_bbox
 
 
-    def crop(self, box):
+    def crop(self, box,filter_bbox=False):
         """
         Cropss a rectangular region from this bounding box. The box is a
         4-tuple defining the left, upper, right, and lower pixel
         coordinate.
         """
         x1, y1, x2, y2, x3, y3, x4, y4 = self._split_into_xyxyxyxy()
-        w, h = x3- x1, y2 - y1
-        cropped_x1 = (x1 - box[0]).clamp(min=0, max=w)
-        cropped_y1 = (y1 - box[1]).clamp(min=0, max=h)
-        cropped_x2 = (x2 - box[0]).clamp(min=0, max=w)
-        cropped_y2 = (y2 - box[1]).clamp(min=0, max=h)
-        cropped_x3 = (x3 - box[0]).clamp(min=0, max=w)
-        cropped_y3 = (y3 - box[1]).clamp(min=0, max=h)
-        cropped_x4 = (x4 - box[0]).clamp(min=0, max=w)
-        cropped_y4 = (y4 - box[1]).clamp(min=0, max=h)
+        x1_, y1_, x2_, y2_, x3_, y3_, x4_, y4_ = x1.clone(), y1.clone(), x2.clone(), y2.clone(),\
+                                                 x3.clone(), y3.clone(), x4.clone(), y4.clone()
 
-        # TODO should I filter empty boxes here?
-        if False:
-            is_empty = (cropped_xmin == cropped_xmax) | (cropped_ymin == cropped_ymax)
 
-        cropped_box = torch.cat(
+        w, h = box[2] - box[0], box[3] - box[1]
+        cropped_x1 = (x1_ - box[0]).clamp(min=0, max=w)
+        cropped_y1 = (y1_ - box[1]).clamp(min=0, max=h)
+        cropped_x2 = (x2_ - box[0]).clamp(min=0, max=w)
+        cropped_y2 = (y2_ - box[1]).clamp(min=0, max=h)
+        cropped_x3 = (x3_ - box[0]).clamp(min=0, max=w)
+        cropped_y3 = (y3_ - box[1]).clamp(min=0, max=h)
+        cropped_x4 = (x4_ - box[0]).clamp(min=0, max=w)
+        cropped_y4 = (y4_ - box[1]).clamp(min=0, max=h)
+
+
+        keep = ((cropped_y1 <= cropped_y2) & (cropped_x3 >= cropped_x2)
+                & (cropped_x4 > cropped_x1) & (cropped_y3 > cropped_y4))
+
+
+        crashed_bbox = (cropped_x1 == 0) & (cropped_x4 > cropped_x1) & keep
+        cropped_y1[crashed_bbox] = y1[crashed_bbox] - box[1] + (y4[crashed_bbox] - y1[crashed_bbox]) \
+                                   / (x4[crashed_bbox] - x1[crashed_bbox]) * (box[0] - x1[crashed_bbox])
+
+
+        crashed_bbox = (cropped_x2 == 0) & (cropped_x3 > cropped_x2) & keep
+        cropped_y2[crashed_bbox] = y2[crashed_bbox] - box[1]+ (y3[crashed_bbox] - y2[crashed_bbox]) / \
+                                   (x3[crashed_bbox] - x2[crashed_bbox]) * (box[0] - x2[crashed_bbox])
+
+
+        crashed_bbox = (cropped_x4 == w) & (cropped_x1 < cropped_x4) & keep
+        cropped_y4[crashed_bbox] = y1[crashed_bbox] - box[1]+ (y4[crashed_bbox] - y1[crashed_bbox]) /\
+                                   (x4[crashed_bbox] - x1[crashed_bbox]) * (box[2] - x1[crashed_bbox])
+
+
+        crashed_bbox = (cropped_x3 == w) & (cropped_x2 < cropped_x3) & keep
+        cropped_y3[crashed_bbox] = y2[crashed_bbox] - box[1] + (y3[crashed_bbox] - y2[crashed_bbox]) / \
+                     (x3[crashed_bbox] - x2[crashed_bbox]) * (box[2] - x2[crashed_bbox])
+
+
+        crashed_bbox = (cropped_y1 == 0) & (cropped_y2 > cropped_y1) & keep
+        cropped_x1[crashed_bbox] = x1[crashed_bbox] - box[0] + (x2[crashed_bbox] - x1[crashed_bbox]) / \
+                                   (y2[crashed_bbox] - y1[crashed_bbox]) * (box[1] - y1[crashed_bbox])
+
+
+        crashed_bbox = (cropped_y4 == 0) & (cropped_y3 > cropped_y4) & keep
+        cropped_x4[crashed_bbox] = x4[crashed_bbox]-box[0] + (x3[crashed_bbox] - x4[crashed_bbox]) / \
+                                   (y3[crashed_bbox] - y4[crashed_bbox]) * (box[1] - y4[crashed_bbox])
+
+
+        crashed_bbox = (cropped_y2 == h) & (cropped_y1 < cropped_y2) & keep
+        cropped_x2[crashed_bbox] = x1[crashed_bbox] -box[0] + (x2[crashed_bbox] - x1[crashed_bbox]) / \
+                                   (y2[crashed_bbox] - y1[crashed_bbox]) * (box[3] - y1[crashed_bbox])
+
+
+        crashed_bbox = (cropped_y3 == h) & (cropped_y4 < cropped_y3) & keep
+        cropped_x3[crashed_bbox] = x4[crashed_bbox] -box[0] + (x3[crashed_bbox] - x4[crashed_bbox]) / \
+                                   (y3[crashed_bbox] - y4[crashed_bbox]) * (box[3] - y4[crashed_bbox])
+
+
+
+
+        cropped_bboxes = torch.cat(
             (cropped_x1, cropped_y1, cropped_x2, cropped_y2,
              cropped_x3, cropped_y3, cropped_x4, cropped_y4), dim=-1
         )
-        bbox = BoxList(cropped_box, (w, h), mode="xyxyxyxy")
-        # bbox._copy_extra_fields(self)
+
+        bbox = BoxList(cropped_bboxes, (w, h), mode="xyxyxyxy")
         for k, v in self.extra_fields.items():
             if not isinstance(v, torch.Tensor):
                 v = v.crop(box)
             bbox.add_field(k, v)
         return bbox.convert(self.mode)
 
-    # Tensor-like methods
 
+
+
+    # Tensor-like methods
     def to(self, device):
         bbox = BoxList(self.bbox.to(device), self.size, self.mode)
         for k, v in self.extra_fields.items():
@@ -329,26 +470,34 @@ class BoxList(object):
         y3 = y3.clamp_(min=0, max=self.size[1] - TO_REMOVE).squeeze()
         y4 = y4.clamp_(min=0, max=self.size[1] - TO_REMOVE).squeeze()
 
+        bbox = BoxList(torch.stack([x1, y1, x2, y2, x3, y3, x4, y4],dim=-1).reshape(-1,8),image_size=self.size,mode='xyxyxyxy')
+        bbox._copy_extra_fields(self)
+        bbox = bbox.convert(self.mode)
 
         if remove_empty:
             # keep = ((box[:, 3]- box[:,1]) > 2) & ((box[:, 2] - box[:,0])> 2)
             # p1_y < p2_y p3_x > p2_x p4_x > p1_x p3_y > p4_y
             # if a = -pi/2
 
-            keep = ((y1 <= y2) & (x3 >= x2) & (x4 > x1) & (y3 > y4)).reshape(-1)
+            keep = (((y1 <= y2) & (x3 >= x2) & (x4 >= x1) & (y3 >= y4)) & \
+                   ~((y1==y2) & (x3==x2) & (x4==x1) & (y3==y4))).reshape(-1)
 
-            return self[keep]
-        return self
+            return bbox[keep]
+        return bbox
+
 
 
 
     def area(self):
         box = self.bbox
         if self.mode == "xyxyxyxy":
-            TO_REMOVE = 1
             # TODO here is a imprecise calculation, assuming the bbox is a rectangle
-            area = (box[:, 6] - box[:, 0] + TO_REMOVE) * (box[:, 3] - box[:, 1] + TO_REMOVE)
+            xywha_bbox = self.convert('xywha')
+            area = xywha_bbox.bbox[:,2] * xywha_bbox.bbox[:,3]
+
         elif self.mode == "xywha":
+            area = box[:, 2] * box[:, 3]
+        elif self.mode == "xywha_d":
             area = box[:, 2] * box[:, 3]
         else:
             raise RuntimeError("Should not be here")
@@ -383,12 +532,10 @@ class BoxList(object):
         rbboxes = []
         indexs = []
         bboxes = self.bbox.numpy()
-        for i,bbox in enumerate(bboxes):
+        for i, bbox in enumerate(bboxes):
             rbbox = cv2.minAreaRect(bbox.reshape((4,2)).astype(np.float32))
             x, y, w, h, a = rbbox[0][0], rbbox[0][1], rbbox[1][0], rbbox[1][1], rbbox[2]
 
-            if w == 0 or h == 0:
-                continue
             while not 0 > a >= -90:
                 if a >= 0:
                     a -= 90
@@ -405,14 +552,16 @@ class BoxList(object):
 
 
         rbbox = torch.tensor(rbboxes,dtype=torch.float32,device=self.device)
+
         rbbox = BoxList(rbbox,image_size=self.size,mode='xywha')
+
         for k, v in self.extra_fields.items():
             rbbox.add_field(k, v[indexs])
         return rbbox
 
 
 
-    def xywha_to_xyxyxyxy(self):
+    def xywha_to_xyxyxyxy(self, clockwise=True):
         """Convert xywha format to xyxyxyxyxy
 
         xyxyxyxy : left_top point xy, left_bottom point xy, right_bottom point xy, right top point xy
@@ -423,20 +572,24 @@ class BoxList(object):
         w = self.bbox[:, 2]
         h = self.bbox[:, 3]
         a = self.bbox[:, 4]
-        cosa = np.cos(a)
-        sina = np.sin(a)
+        # -pi/2 <= a < 0, cosa>0 sina<0
+        cosa = torch.cos(a)
+        sina = torch.sin(a)
+        # wx>0 wy<0
         wx, wy = w / 2 * cosa, w / 2 * sina
+        # hx>0 hy>0
         hx, hy = -h / 2 * sina, h / 2 * cosa
         p1x, p1y = xc - wx - hx, yc - wy - hy
         p2x, p2y = xc - wx + hx, yc - wy + hy
         p3x, p3y = xc + wx + hx, yc + wy + hy
         p4x, p4y = xc + wx - hx, yc + wy - hy
 
-        polygons = torch.from_numpy(np.stack([p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y], axis=-1))\
-            .to(self.device)
-        rbbox = BoxList(polygons,image_size=self.size,mode='xyxyxyxy')
+
+        polygons = torch.stack([p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y], dim=-1).to(self.device)
+        rbbox = BoxList(polygons, image_size=self.size, mode='xyxyxyxy')
         rbbox._copy_extra_fields(self)
-        rbbox = rbbox.change_order_to_clockwise()
+        if clockwise:
+            rbbox = rbbox.change_order_to_clockwise()
         return rbbox
 
     def xywha_to_xywhad(self):
@@ -495,8 +648,13 @@ class BoxList(object):
         assert self.mode == 'xywha_d'
         rounded_xywhad = self.bbox.new_zeros(self.bbox.shape)
         rounded_angle = torch.round(self.bbox[:, 4])
-        assert max(rounded_angle) < 0, "degree angle < 0"
-        rounded_xywhad[:, :4] = self.bbox[:, :4]
+        origin_bbox = self.bbox[:, :4].clone()
+        index_for_0 = (rounded_angle == 0)
+        rounded_angle[index_for_0] = -90
+        origin_bbox[index_for_0, 2], origin_bbox[index_for_0, 3] = origin_bbox[index_for_0, 3], origin_bbox[index_for_0, 2]
+
+        assert torch.max(rounded_angle) < 0, "degree angle < 0"
+        rounded_xywhad[:, :4] = origin_bbox[:, :4]
         rounded_xywhad[:, 4] = rounded_angle
         rounded_xywhad = BoxList(rounded_xywhad, image_size=self.size, mode='xywha_d')
         rounded_xywhad._copy_extra_fields(self)
@@ -504,6 +662,46 @@ class BoxList(object):
 
 
 
+
+
+def filter_bboxes(origin_bboxes, cropped_bboxes,bbox,keep_best_ioa=False):
+
+
+    if cropped_bboxes.mode == 'xywha' or cropped_bboxes.mode == 'xywha_d':
+        keep = (cropped_bboxes.bbox[:, 2] > 0) & (cropped_bboxes.bbox[:, 3] > 0)
+        cropped_bboxes_ = cropped_bboxes[keep]
+        cropped_bboxes_filtered = copy.copy(cropped_bboxes_)
+    else:
+        x1, y1, x2, y2, x3, y3, x4, y4 = cropped_bboxes._split_into_xyxyxyxy()
+        keep = ((y1 <= y2) & (x3 >= x2) & (x4 > x1) & (y3 > y4)).reshape(-1)
+        cropped_bboxes_ = cropped_bboxes[keep]
+        cropped_bboxes_filtered = copy.copy(cropped_bboxes_)
+
+
+    origin_bboxes_ = origin_bboxes.convert('xyxyxyxy')
+    origin_bboxes_ = origin_bboxes_[keep].bbox
+
+    cropped_bboxes_ = cropped_bboxes_.convert('xyxyxyxy')
+
+    cropped_bboxes_ = cropped_bboxes_.bbox.clone()
+    cropped_bboxes_[:, 0:8:2] += bbox[0]
+    cropped_bboxes_[:, 1:8:2] += bbox[1]
+
+    ioas = cropped_bboxes_.new_zeros(cropped_bboxes_.shape[0])
+
+    for i, (cropped_bbox, origin_bbox) in enumerate(zip(cropped_bboxes_, origin_bboxes_)):
+        if (cropped_bbox[1] <= cropped_bbox[3]) and (cropped_bbox[4] >= cropped_bbox[2]) and \
+            (cropped_bbox[6] > cropped_bbox[0]) and (cropped_bbox[5] > cropped_bbox[7]):
+            boxlist1 = BoxList(cropped_bbox.reshape(-1, 8), image_size=cropped_bboxes.size, mode='xyxyxyxy')
+            boxlist2 = BoxList(origin_bbox.reshape(-1, 8), image_size=cropped_bboxes.size, mode='xyxyxyxy')
+            ioa = boxlist_ioa(boxlist1, boxlist2)
+            ioas[i] = ioa
+
+    keep = ioas > 0.6
+    if keep_best_ioa:
+        _, ioa_max_index = torch.max(ioas, dim=0)
+        keep[ioa_max_index] = True
+    return cropped_bboxes_filtered[keep].convert(cropped_bboxes.mode)
 
 
 
@@ -555,7 +753,7 @@ def boxlist_ml_rnms(boxlist, nms_thresh, max_proposals=-1,
     scores = boxlist.get_field(score_field)
     labels = boxlist.get_field(label_field)
 
-    keep = batched_rnms(boxes, scores, labels.float(), nms_thresh)
+    keep = batched_rnms(boxes, scores, labels.to(torch.float32), nms_thresh, class_agnostic=True)
     if max_proposals > 0:
         keep = keep[: max_proposals]
     boxlist = boxlist[keep]
@@ -571,11 +769,8 @@ def remove_small_boxes(boxlist, min_size):
         min_size (int)
     """
     # TODO maybe add an API for querying the ws / hs
-    xywh_boxes = boxlist.convert("xywh").bbox
-    _, _, ws, hs = xywh_boxes.unbind(dim=1)
-    keep = (
-        (ws >= min_size) & (hs >= min_size)
-    ).nonzero().squeeze(1)
+    area = boxlist.area()
+    keep = area > min_size
     return boxlist[keep]
 
 
@@ -592,6 +787,7 @@ def boxlist_iou(boxlist1, boxlist2):
 
     Arguments:
       box1: (BoxList) bounding boxes, sized [N,5] or [N,8].
+            if bounding boxes are [N,5], then it will be converted to xyxyxyxy
       box2: (BoxList) bounding boxes, sized [M,5] or [M,8].
 
     Returns:
@@ -606,38 +802,60 @@ def boxlist_iou(boxlist1, boxlist2):
 
     boxlist1_ = copy.deepcopy(boxlist1)
     boxlist2_ = copy.deepcopy(boxlist2)
-    boxlist1_ = boxlist1_.convert("xyxyxyxy")
-    boxlist2_ = boxlist2_.convert("xyxyxyxy")
 
-    p1 = boxlist1_.bbox.to(torch.float64)
-    p2 = boxlist2_.bbox.to(torch.float64)
+    # actually , there is no need to change_order_to_clockwise
+    if boxlist1_.mode == 'xywha_d':
+        boxlist1_ = boxlist1_.xywhad_to_xywha().xywha_to_xyxyxyxy(clockwise=False)
+    elif boxlist1_.mode == 'xywha':
+        boxlist1_ = boxlist1_.xywha_to_xyxyxyxy(clockwise=False)
+    else:
+        pass
+    if boxlist2_.mode == 'xywha_d':
+        boxlist2_ = boxlist2_.xywhad_to_xywha().xywha_to_xyxyxyxy(clockwise=False)
+    elif boxlist2_.mode == 'xywha':
+        boxlist2_ = boxlist2_.xywha_to_xyxyxyxy(clockwise=False)
+    else:
+        pass
+
+    # boxlist1_ = boxlist1_.convert("xyxyxyxy")
+    # boxlist2_ = boxlist2_.convert("xyxyxyxy")
+
+    p1 = boxlist1_.bbox.to(torch.float64).cpu()
+    p2 = boxlist2_.bbox.to(torch.float64).cpu()
     iou = polygon_iou(p1, p2).numpy()
 
-    return iou
+    return torch.from_numpy(iou).to(boxlist1.device)
 
 def boxlist_ioa(boxlist1, boxlist2):
-    """Returns the intersection over box2 area given box1, box2."""
+    """Returns the intersection over box2 area given box1, box2.
+    Notice: not fast implemented
+    """
     if boxlist1.size != boxlist2.size:
         raise RuntimeError(
                 "boxlists should have same image size, got {}, {}".format(boxlist1, boxlist2))
 
-    N = len(boxlist1)
-    M = len(boxlist2)
 
-    area1 = boxlist1.area()
     area2 = boxlist2.area()
 
-    box1, box2 = boxlist1.bbox, boxlist2.bbox
+    boxlist1_ = boxlist1.convert('xywha_d')
+    boxlist2_ = boxlist2.convert('xywha_d')
+    box1, box2 = boxlist1_.bbox, boxlist2_.bbox
 
-    lt = torch.max(box1[:, None, :2], box2[:, :2])  # [N,M,2]
-    rb = torch.min(box1[:, None, 2:], box2[:, 2:])  # [N,M,2]
-
-    TO_REMOVE = 1
-
-    wh = (rb - lt + TO_REMOVE).clamp(min=0)  # [N,M,2]
-    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
-
-    ioa = inter /area2
+    inter = box1.new_zeros((len(boxlist1_), len(boxlist2_)))
+    for i, _ in enumerate(box1):
+        for j, _ in enumerate(box2):
+            box1_ = copy.deepcopy(box1[i, :]).numpy()
+            box1_ = ((box1_[0], box1_[1]), (box1_[2], box1_[3]), box1_[4])
+            box2_ = copy.deepcopy(box2[j, :]).numpy()
+            box2_ = ((box2_[0], box2_[1]), (box2_[2], box2_[3]), box2_[4])
+            inter_area = cv2.rotatedRectangleIntersection(box1_, box2_)
+            if inter_area[0] == 0:
+                inter_area = 0
+            else:
+                order_pts = cv2.convexHull(inter_area[1], returnPoints=True)
+                inter_area = cv2.contourArea(order_pts)
+            inter[i, j] = inter_area
+    ioa = inter / area2
     return ioa
 
 # TODO redundant, remove
@@ -681,9 +899,9 @@ def cat_boxlist(bboxes):
 
 
 def test():
-    box1 = torch.tensor([1,2, 1,4, 3,4, 3,2]).repeat(4,1).to(torch.float64)
-    box2 = torch.tensor([1.5,2, 1.5,5, 4,5, 4,2]).repeat(4,1).to(torch.float64)
-    box1 = BoxList(box1,image_size=(1024,1024),mode='xyxyxyxy')
-    box2 = BoxList(box2,image_size=(1024,1024),mode='xyxyxyxy')
+    box1 = torch.tensor([1, 2, 3, 4, 1,4, 3,2]).repeat(4,1).to(torch.float64)
+    box2 = torch.tensor([1.5, 2, 1.5,5, 4,5, 4,2]).repeat(4,1).to(torch.float64)
+    box1 = BoxList(box1, image_size=(1024,1024),mode='xyxyxyxy')
+    box2 = BoxList(box2, image_size=(1024,1024),mode='xyxyxyxy')
     ious = boxlist_iou(box1, box2)
     print(ious)

@@ -9,12 +9,12 @@ def get_argparser():
     # according to Yet-another-efficientdet-pytorch, the base lr 1e-4 if for total batchsize 12
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch', type=int, default=8)
-    parser.add_argument('--epoch', type=int, default=24)
+    parser.add_argument('--epoch', type=int, default=48)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--n_save_sample', type=int, default=5)
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--working_dir', type=str, default="./training_dir/")
-    parser.add_argument('--path', type=str, default="data/DIOR/")
+    parser.add_argument('--path', type=str, default="data/")
 
 
     return parser
@@ -27,11 +27,11 @@ def get_args():
     args.lr_gamma = 0.1
 
     # backbone name type: 'model_type - coef' ,for examplt:'ResNet-101','Efficientdet-0'
-    args.backbone_name = 'Efficientdet-1'
+    args.backbone_name = 'Efficientdet-0'
     get_mdoel_type(args)
-    args.load_pretrained_weight = False
-    args.load_checkpoint = True
-    args.weight_path = 'training_dir/2009010908/epoch-1.pt'
+    args.load_pretrained_weight = True
+    args.load_checkpoint = False
+    args.weight_path = 'weights/efficientdet-d0.pth'
     args.head_only = False
     args.finetune = True
     args.early_stopping = False
@@ -84,12 +84,13 @@ def get_args():
 
     # regressing from a box ('BOX') or a point ('POINT')
     args.regression_type = "BOX"
-    args.anchor_sizes = [64, 128, 256, 512, 1024]
+    args.anchor_sizes = [32, 64, 128, 256, 512]
     args.anchor_strides = [8, 16, 32, 64, 128]
     # topk for selecting candidate positive samples from each level
 
     # for loss
     args.reg_loss_weight = 2.0
+    args.angle_loss_weight = 0.5
     args.gamma = 2.0
     args.alpha = 0.25
 

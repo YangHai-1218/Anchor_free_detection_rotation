@@ -12,13 +12,13 @@ save_dir = ''
 
 def load_det(annotations):
     image_anno = defaultdict(list)
-    annotations_ = copy.deepcopy(annotations)
-    for annotation in annotations_:
+
+    for annotation in annotations:
         image_id = annotation['image_id']
         category_id = annotation['category_id']
         bbox = annotation['bbox']
         score = annotation['score']
-        image_anno[image_id].append({'category_id':category_id,'bbox':bbox,'score':score})
+        image_anno[image_id].append({'category_id': category_id, 'bbox': bbox, 'score': score})
     return image_anno
 
 
@@ -28,7 +28,7 @@ def convert_to_boxlist(annotations):
         bbox = [bbox_annotation['bbox'] for bbox_annotation in annotations[image_id]]
         score = [bbox_annotation['score'] for bbox_annotation in annotations[image_id]]
         label = [bbox_annotation['category_id'] for bbox_annotation in annotations[image_id]]
-        boxlist = BoxList(bbox,image_size=(1024,1024),mode='xyxyxyxy')
+        boxlist = BoxList(bbox, image_size=(1024,1024), mode='xyxyxyxy')
         boxlist.add_field('scores', torch.as_tensor(score).reshape(-1))
         boxlist.add_field('labels', torch.as_tensor(label).reshape(-1))
         boxlist_annotations[image_id] = boxlist
@@ -38,13 +38,13 @@ def convert_to_boxlist(annotations):
 def map_to_origin_image(boxlist_annotations, cocogt):
     origin_image_anno = defaultdict(list)
     for image_id in boxlist_annotations:
-        image_content = cocogt.loadImgs(ids= [image_id])
+        image_content = cocogt.loadImgs(ids=[image_id])
         image_content = image_content[0]
         image_name = image_content["file_name"]
         image_base_name = image_name.split('|')[0]
         row, col = image_name.split('|')[1].split('_')[:2] # col 竖列(x) row 横排(y)
         det_result = boxlist_annotations[image_id]
-        offset = torch.tensor([col, row], dtype= torch.float32).repeat(4)
+        offset = torch.tensor([col, row], dtype=torch.float32).repeat(4)
         det_result.bbox = det_result.bbox + offset
         det_result.size = (image_content['wdith'], image_content['height'])
         origin_image_anno[image_base_name].append(det_result)

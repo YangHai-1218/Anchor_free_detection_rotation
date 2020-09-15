@@ -73,7 +73,7 @@ def make_coco_detection(predictions, dataset):
 
         img_meta = dataset.get_image_meta(id)
 
-        pred_resize = map_to_origin_image(img_meta,pred,mode='letterbox')
+        pred_resize = map_to_origin_image(img_meta, pred, flipmode='no', resize_mode='letterbox')
 
         boxes = pred_resize.bbox.tolist()
         scores = pred_resize.get_field('scores').tolist()
@@ -140,7 +140,7 @@ class COCOResult:
         return repr(self.results)
 
 
-def map_to_origin_image(img_meta,pred,flipmode='no',resize_mode='letterbox'):
+def map_to_origin_image(img_meta, pred, flipmode='no', resize_mode='letterbox'):
     '''
     img_meta: "id": int, "width": int, "height": int,"file_name": str,
     pred: boxlist object

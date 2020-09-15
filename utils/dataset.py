@@ -6,7 +6,7 @@ from torchvision import datasets
 from utils.boxlist import BoxList
 import cv2
 import numpy as np
-
+import random
 
 def has_only_empty_bbox(annot):
     # if bbox width and height <=1 , then it is a empty box
@@ -95,11 +95,13 @@ class DOTADataset(datasets.CocoDetection):
         return root, annot
 
     def __getitem__(self, index,transform_enable=True):
-        if isinstance(index,tuple) or isinstance(index,list):
+
+        if isinstance(index, tuple) or isinstance(index, list):
             transform_enable = index[1]
             index = index[0]
         else:
             transform_enable = True
+
         coco = self.coco
         img_id = self.ids[index]
         ann_ids = coco.getAnnIds(imgIds=img_id)
@@ -108,7 +110,7 @@ class DOTADataset(datasets.CocoDetection):
         path = coco.loadImgs(img_id)[0]['file_name']
 
 
-        img = cv2.imread(os.path.join(self.root, path), cv2.IMREAD_ANYDEPTH)
+        img = cv2.imread(os.path.join(self.root, path), cv2.IMREAD_UNCHANGED)
         if img.ndim == 2:
             # if single channel image, then convert to BGR
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -126,8 +128,36 @@ class DOTADataset(datasets.CocoDetection):
         boxes = torch.as_tensor(boxes).reshape(-1, 8)
         #target = BoxList(boxes, (width,height), mode='xyxyxyxy').convert('xywha')
         target = BoxList(boxes, (width,height), mode='xyxyxyxy')
+
+        while len(target) == 0:
+            index = random.randint(0, len(self))
+
+            img_id = self.ids[index]
+            ann_ids = coco.getAnnIds(imgIds=img_id)
+            annots = coco.loadAnns(ann_ids)
+
+            path = coco.loadImgs(img_id)[0]['file_name']
+
+            img = cv2.imread(os.path.join(self.root, path), cv2.IMREAD_UNCHANGED)
+            if img.ndim == 2:
+                # if single channel image, then convert to BGR
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            elif img.ndim == 3:
+                pass
+            else:
+                raise RuntimeError("{} channel image not supported".format(img.ndim))
+
+            height, width, _ = img.shape
+            annots = [o for o in annots if o['iscrowd'] == 0]
+            boxes = [o['bbox'] for o in annots]
+            boxes = torch.as_tensor(boxes).reshape(-1, 8)
+            # target = BoxList(boxes, (width,height), mode='xyxyxyxy').convert('xywha')
+            target = BoxList(boxes, (width, height), mode='xyxyxyxy')
+
+
         target = target.change_order_to_clockwise()
         target = target.convert('xywha_d')
+
 
         #target = target.convert('xywha')
 
@@ -140,7 +170,6 @@ class DOTADataset(datasets.CocoDetection):
 
 
         target = target.clip_to_image(remove_empty=True)
-
 
         if self.transformer is not None and transform_enable:
             img, target = self.transformer(img, target)
