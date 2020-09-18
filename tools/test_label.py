@@ -14,7 +14,12 @@ CLASS_NAME = ('__background__','plane', 'baseball-diamond', 'bridge', 'ground-tr
                 'swimming-pool', 'helicopter')
 
 categories_map = {class_name:i for i,class_name in enumerate(CLASS_NAME)}
-image_root = '/Volumes/hy_mobile/03data/DOTA-v1.5/min_split_val'
+del categories_map['__background__']
+for key in categories_map:
+    categoriy_info = {"id": categories_map[key], "name": key}
+    annotations_info['categories'].append(categoriy_info)
+
+image_root = '/Volumes/hy_mobile/03data/DOTA-v1.5/min_split_train'
 json_annotation_path = '/Volumes/hy_mobile/03data/DOTA-v1.5/annotations/annotations_split_val.json'
 image_file_paths = glob.glob(image_root+'/*.png')
 

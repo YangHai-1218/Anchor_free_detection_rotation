@@ -41,7 +41,7 @@ def draw_ploygon_bbox_text(drawObj, anticlockwise_points, text, color, bd=2):
 
 
 
-def show_polygon_bbox(img, boxes, labels, NAME_TAB, file_name=None, scores=None,
+def show_polygon_bbox(img, boxes, labels, NAME_TAB, file_name=None, scores=None,score_threshold=0,
                 matplotlib=False, lb_g=True):
     '''
     img:      image_path(str) or PIL.Image obj
@@ -71,9 +71,10 @@ def show_polygon_bbox(img, boxes, labels, NAME_TAB, file_name=None, scores=None,
             if scores is None:
                 draw_ploygon_bbox_text(drawObj, box, NAME_TAB[lb], color=COLOR_TABLE[lb])
             else:
-                str_score = str(float(scores[box_id]))[:5]
-                str_out = NAME_TAB[lb] + ': ' + str_score
-                draw_ploygon_bbox_text(drawObj, box, str_out, color=COLOR_TABLE[lb])
+                if scores[box_id]>score_threshold:
+                    str_score = str(float(scores[box_id]))[:5]
+                    str_out = NAME_TAB[lb] + ': ' + str_score
+                    draw_ploygon_bbox_text(drawObj, box, str_out, color=COLOR_TABLE[lb])
     if file_name is not None:
         img.save(file_name)
     else:
@@ -92,22 +93,23 @@ def test():
     import cv2
     from utils.dataset import DOTADataset
     import random
+    import os
     dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5', split='train', image_folder_name='min_split_',
                           anno_folder_name='annotations_split_')
 
-    for i in range(30):
-        #i = random.randint(0,len(dataset)-1)
-        i = 82
-        img, target, idx, path = dataset[i]
+    for i in range(500):
+
+
+        img, target, idx,path = dataset[i]
         print(f'origin_target:{target}')
         img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         print(target)
         target = target.convert('xyxyxyxy')
         show_polygon_bbox(img, target.bbox, target.get_field("labels"), dataset.NAME_TAB,
-                          file_name=None,
+                          file_name=os.path.join('/Volumes/hy_mobile/03data/DOTA-v1.5/min_split_train_visualize',path+'.png'),
                           scores=None,matplotlib=False,
                          lb_g=True)
-        print(path)
+
         print(target)
 
 

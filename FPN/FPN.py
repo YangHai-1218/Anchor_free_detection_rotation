@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 def init_conv_std(module, std=0.01):
     if isinstance(module, nn.Conv2d):

@@ -57,7 +57,6 @@ class ATSSPostProcessor(nn.Module):
         # angle (N,anchor_featuremap,90)
         box_angle = permute_and_flatten(angle, N, A, 90, H, W)
         box_angle = box_angle.reshape(N, -1, 90).softmax(dim=-1)
-        box_angle = torch.softmax(box_angle, dim=-1)
 
         # filter some anchors using nms_thresh(inference threshold)
         # candidate_inds (N,anchors_feature_map,class_num)
@@ -85,6 +84,9 @@ class ATSSPostProcessor(nn.Module):
 
             # per_box_cls (n) n is the number of elements > inference_threshold in per_box_cls,
             # the element is the probability
+            if per_pre_nms_top_n == 0:
+                results.append(None)
+                continue
             per_box_cls = per_box_cls[per_candidate_inds]
 
             #
@@ -96,16 +98,24 @@ class ATSSPostProcessor(nn.Module):
 
             per_box_loc = per_candidate_nonzeros[:, 0]
             per_class = per_candidate_nonzeros[:, 1] + 1
-            _, per_angle = per_box_angle[per_box_loc, :].max(dim=-1)
-            torch.cat([per_box_regression[per_box_loc, :].view(-1, 4),per_angle.view(-1)],dim=-1)
+            try:
+                _, per_angle = per_box_angle[per_box_loc, :].max(dim=-1)
+            except:
+                breakpoint =1
+            # attention here
+            per_angle = per_angle - 90
+
 
             detections = self.box_coder.decode(
-                torch.cat([per_box_regression[per_box_loc, :].view(-1, 4),per_angle.view(-1)], dim=-1),
+                torch.cat([per_box_regression[per_box_loc, :].view(-1, 4),
+                           per_angle.view(-1, 1).to(per_box_regression.dtype)],
+                          dim=-1),
                 per_anchors.bbox[per_box_loc, :].view(-1, 5)
             )
 
             boxlist = BoxList(detections, per_anchors.size, mode="xywha_d")
             boxlist.add_field("labels", per_class)
+            # why sqrt?
             boxlist.add_field("scores", torch.sqrt(per_box_cls))
             boxlist = boxlist.clip_to_image(remove_empty=False)
             boxlist = remove_small_boxes(boxlist, self.min_size)
@@ -146,11 +156,9 @@ class ATSSPostProcessor(nn.Module):
 
         boxlists = list(zip(*sampled_boxes))
         # boxlists list(boxlist) predicted bbox for every image in batch
-        boxlists = [cat_boxlist(boxlist) for boxlist in boxlists]
 
-        if self.multi_scale_test:
-            # if use the multi_scale_test, don't apply nms in this stage
-            return boxlists
+        boxlists = [cat_boxlist(boxlist) if (boxlist != (None,)*5) and (boxlist != [None]*5) else None for boxlist in boxlists]
+
 
         if not self.bbox_aug_vote:
             boxlists = self.select_over_all_levels(boxlists)
@@ -167,6 +175,11 @@ class ATSSPostProcessor(nn.Module):
         num_images = len(boxlists)
         results = []
         for i in range(num_images):
+            if boxlists[i] == None:
+                results.append(None)
+                continue
+
+
             # multiclass nms
             nms_result = boxlist_ml_rnms(boxlists[i], self.nms_thresh)
 
@@ -183,6 +196,7 @@ class ATSSPostProcessor(nn.Module):
                 keep = torch.nonzero(keep).squeeze(1)
                 nms_result = nms_result[keep]
 
+            nms_result = nms_result.convert('xyxyxyxy')
             results.append(nms_result)
         return results
 
@@ -190,6 +204,10 @@ class ATSSPostProcessor(nn.Module):
         num_images = len(boxlists)
         results = []
         for i in range(num_images):
+            if boxlists[i] == None:
+                results.append(None)
+                continue
+
             # multiclass nms
             origin_result = boxlists[i]
             nms_result = boxlist_ml_rnms(boxlists[i], self.nms_thresh)
@@ -215,15 +233,17 @@ class ATSSPostProcessor(nn.Module):
 
             for i in range(self.class_num):
                 nms_bbox_class_i = nms_result[nms_labels==(i+1)]
+                if len(nms_bbox_class_i) == 0:
+                    continue
                 origin_bbox_class_i = origin_result[origin_labels==(i+1)]
-                iou = boxlist_iou(nms_bbox_class_i,origin_bbox_class_i)
+                iou = boxlist_iou(nms_bbox_class_i, origin_bbox_class_i)
                 # let n be the num of nms_result, m be the num of origin_result,then the iou is a (n,m) martix
                 keeps = iou > self.bbox_voting_threshold
 
                 scores = origin_bbox_class_i.get_field("scores")
                 scores = keeps.float()*scores
-                bboxs_voted = origin_bbox_class_i.bbox[None,:,:]*scores[:,:,None]
-                bboxs_voted = bboxs_voted.sum(dim=1)/scores.sum(dim=1)[:,None]
+                bboxs_voted = origin_bbox_class_i.bbox[None, :, :]*scores[:, :, None]
+                bboxs_voted = bboxs_voted.sum(dim=1)/scores.sum(dim=1)[:, None]
                 # bboxs_voted = []
                 # for i,keep in enumerate(keeps):
                 #     keep = keep.nonzero()
@@ -232,14 +252,15 @@ class ATSSPostProcessor(nn.Module):
                 #     bbox_voted = torch.sum(scores * bbox_origin.bbox ,dim=0) / torch.sum(scores)
                 #     bboxs_voted.append(bbox_voted)
                 # bboxs_voted = torch.cat(bboxs_voted,dim=0)
-                bboxs_class_i = BoxList(bboxs_voted,nms_result.size,mode='xyxy')
-                bboxs_class_i.add_field('labels',nms_bbox_class_i.get_field("labels"))
-                bboxs_class_i.add_field('scores',nms_bbox_class_i.get_field("scores"))
+                bboxs_class_i = BoxList(bboxs_voted, nms_result.size, mode='xywha_d')
+                bboxs_class_i.add_field('labels', nms_bbox_class_i.get_field("labels"))
+                bboxs_class_i.add_field('scores', nms_bbox_class_i.get_field("scores"))
 
                 result.append(bboxs_class_i)
 
 
             result = cat_boxlist(result)
+            result = result.convert('xyxyxyxy')
             results.append(result)
         return results
 

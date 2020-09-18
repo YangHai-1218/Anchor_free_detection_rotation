@@ -83,17 +83,15 @@ class Crop:
         target = target.crop([100,100,500,500])
         target = target.clip_to_image()
         return img, target
-class Resize_For_Efficientnet:
-    """ similar letter box resize implement"""
 
-    def __init__(self, compund_coef=0, color=(114, 114, 114)):
-        self.target_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536]
-        self.target_size = self.target_sizes[compund_coef]
+
+class Resize_letterbox_square:
+    def __init__(self, size, color=(114,114,114)):
+        self.target_size = size
         self.color = color
 
     def __call__(self, img, target):
-        # 长边resize到target_size,短边成比例缩放，之后进行pad
-        size = (self.target_size,) * 2
+        size = self.target_size
         height, width, _ = img.shape
         if height > width:
             scale = self.target_size / height
@@ -110,11 +108,19 @@ class Resize_For_Efficientnet:
         new_image[:, :, 1] = self.color[1]
         new_image[:, :, 2] = self.color[2]
         new_image[0:resized_height, 0:resized_width] = resized_image
-
-        resized_target = target.resize((resized_width, resized_height))
-        target = BoxList(resized_target.bbox, image_size=(self.target_size,) * 2, mode=resized_target.mode)
-        target._copy_extra_fields(resized_target)
+        if target is not None:
+            resized_target = target.resize((resized_width, resized_height))
+            target = BoxList(resized_target.bbox, image_size=(self.target_size,) * 2, mode=resized_target.mode)
+            target._copy_extra_fields(resized_target)
         return new_image, target
+
+
+class Resize_For_Efficientnet(Resize_letterbox_square):
+    """ similar letter box resize implement"""
+
+    def __init__(self, compund_coef=0):
+        self.target_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536]
+        super(Resize_For_Efficientnet, self).__init__(self.target_sizes[compund_coef])
 
 
 class RandomResize:
@@ -581,31 +587,28 @@ class RandomAffine:
 
 
 def test():
-    from .dataset import DOTADataset
+    from .dataset import DOTADataset,collate_fn
     from tools.visualize import draw_ploygon_bbox_text,COLOR_TABLE
     from torchvision import transforms
 
-    dataset = DOTADataset('data/', split='train', image_folder_name='min_split_',
-                          anno_folder_name='annotations_split_')
-    # dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5', split='train', image_folder_name='min_split_',
-    #                       anno_folder_name='annotations_split_')
 
-    transform = Compose(
+    # dataset = DOTADataset('data/', split='train', image_folder_name='min_split_',
+    #                       anno_folder_name='annotations_split_')
+    dataset = DOTADataset('/Volumes/hy_mobile/03data/DOTA-v1.5', split='train', image_folder_name='min_split_',
+                          anno_folder_name='annotations_split_')
+    train_trans = Compose(
         [
-            RandomHSV(0.1,0.1,0.1),
-            # RandomAffine(degrees= 1.98*1,translate=0.05 * 0,scale=0.1,shear=0.641 * 0),
-            RandomHorizontalFlip(1),
-            RandomVerticalFlip(1),
-            RandomRotate(1, rotate_time=4),
-            #RandomMixUp(dataset),
-            Cutout(0.9),
-            #Resize_For_Efficientnet(compund_coef=2),
-            #Mosaic(image_size=(768,768),dataset=dataset),
-            # Resize_For_Efficientnet(compund_coef=2),
-            Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152],target_size=(768, 768)),
+            RandomHorizontalFlip(0.5),
+            # transform.RandomMixUp(dataset=train_set),
+            RandomVerticalFlip(0.5),
+            RandomRotate(0.5, rotate_time=4),
+            Cutout(0.5),
+            Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152, 1280], target_size=(768, 768)),
             ToTensor(),
-            # Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
-        ])
+            #Normalize(args.pixel_mean, args.pixel_std),
+        ]
+    )
+    dataset.set_transform(train_trans)
 
     def plot_targets_PIL(image, targets, dataset):
         targets = targets.convert('xyxyxyxy')
@@ -627,10 +630,12 @@ def test():
 
     for i in range(0, 400):
         #i = random.choice(list(range(0,len(dataset))))
-        img_origin, targets_origin, _ = dataset[i]
+        img_new, targets_new, _ = dataset[i]
+        print(targets_new.bbox)
+        targets_new = targets_new.xywhad_round()
 
         # img_origin = plot_targets(img_origin, targets_origin)
-        img_new, targets_new = transform(img_origin, targets_origin)
+        #img_new, targets_new = transform(img_origin, targets_origin)
         if len(targets_new) == 0:
             breakpoint = 1
         # print(f'image_size:{img_new.size()}')
@@ -646,9 +651,9 @@ def test():
 
 
         print(targets_new)
-        # img_new = transforms.ToPILImage()(img_new).convert('RGB')
-        # plot_targets_PIL(img_new, targets_new, dataset)
-        # img_new.show()
+        img_new = transforms.ToPILImage()(img_new).convert('RGB')
+        plot_targets_PIL(img_new, targets_new, dataset)
+        img_new.show()
         breakpoint =1
 
 

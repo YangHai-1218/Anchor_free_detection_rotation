@@ -1,25 +1,29 @@
 import json
 import tempfile
 from collections import OrderedDict
-
+import os
 import numpy as np
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
-from utils.boxlist import BoxList
+from utils import BoxList
+#from utils.pycocotools_rotation import Rotation_COCOeval
 
 
-def evaluate(dataset, predictions):
+def evaluate(dataset, predictions, result_file, score_threshold=None, epoch=0):
     coco_results = {}
-    coco_results['bbox'] = make_coco_detection(predictions, dataset)
+    coco_results['bbox'] = make_coco_detection(predictions, dataset, score_threshold)
 
     results = COCOResult('bbox')
 
-    with tempfile.NamedTemporaryFile() as f:
-        path = f.name
-        res = evaluate_predictions_on_coco(
-            dataset.coco, coco_results['bbox'], path, 'bbox'
-        )
-        results.update(res)
+    path = os.path.join(result_file, str(epoch)+'_result.json')
+    res = evaluate_predictions_on_coco(dataset.coco, coco_results['bbox'], path, 'bbox')
+    results.update(res)
+    # with tempfile.NamedTemporaryFile() as f:
+    #     path = f.name
+    #     res = evaluate_predictions_on_coco(
+    #         dataset.coco, coco_results['bbox'], path, 'bbox'
+    #     )
+    #     results.update(res)
 
     print(results)
 
@@ -32,12 +36,14 @@ def evaluate_predictions_on_coco(coco_gt, results, result_file, iou_type):
 
     coco_dt = coco_gt.loadRes(str(result_file)) if results else COCO()
 
-    coco_eval = COCOeval(coco_gt, coco_dt, iou_type)
+    coco_eval = Rotation_COCOeval(coco_gt, coco_dt, iou_type)
+    coco_eval.params.iouThrs = np.linspace(.25, 0.95, int(np.round((0.95 - .25) / .05)) + 1, endpoint=True)
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
 
-    # compute_thresholds_for_classes(coco_eval)
+    score_threshold = compute_thresholds_for_classes(coco_eval)
+
 
     return coco_eval
 
@@ -60,9 +66,11 @@ def compute_thresholds_for_classes(coco_eval):
     print(list(max_f1))
     print('Score thresholds for classes')
     print(list(scores))
+    print('')
+    return scores
 
 
-def make_coco_detection(predictions, dataset):
+def make_coco_detection(predictions, dataset, score_threshold=None):
     coco_results = []
 
     for id, pred in enumerate(predictions):
@@ -81,6 +89,8 @@ def make_coco_detection(predictions, dataset):
 
 
         labels = [dataset.id2category[i] for i in labels]
+        if score_threshold is None:
+            score_threshold = [0]*len(dataset.id2category)
 
         coco_results.extend(
             [
@@ -91,6 +101,7 @@ def make_coco_detection(predictions, dataset):
                     'score': scores[k],
                 }
                 for k, box in enumerate(boxes)
+                if scores[k] > score_threshold[labels[k] - 1]
             ]
         )
 
@@ -148,7 +159,7 @@ def map_to_origin_image(img_meta, pred, flipmode='no', resize_mode='letterbox'):
     resize_mode: 'letterbox' , 'wrap'
     '''
 
-
+    assert pred.mode == 'xyxyxyxy'
     if flipmode == 'h':
         pred = pred.transpose(0)
     elif flipmode == 'v':
@@ -171,16 +182,16 @@ def map_to_origin_image(img_meta, pred, flipmode='no', resize_mode='letterbox'):
             scale = resized_height / height
             size = (int(width * scale), resized_height)
 
-        pred_resize = BoxList(pred.bbox, size, mode='xyxy')
+        pred_resize = BoxList(pred.bbox, size, mode='xyxyxyxy')
         pred_resize._copy_extra_fields(pred)
         pred_resize = pred_resize.clip_to_image(remove_empty=True)
         pred_resize = pred_resize.resize((width, height))
         pred_resize = pred_resize.clip_to_image(remove_empty=True)
-        pred_resize = pred_resize.convert('xywh')
+        #pred_resize = pred_resize.convert('xywh')
 
     elif resize_mode == 'wrap':
         pred_resize = pred.resize((width, height))
-        pred_resize = pred_resize.convert('xywh')
+        pred_resize = pred_resize.convert('xyxyxyxy')
         pred_resize = pred_resize.clip_to_image(remove_empty=True)
 
     else:

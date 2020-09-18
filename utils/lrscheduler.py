@@ -121,12 +121,11 @@ class GluonLRScheduler(_LRScheduler):
 def set_schduler_with_wormup(args, iter_per_epoch, optimizer, schdeduler):
     iter_warmup = ceil(args.warmup_epoch * iter_per_epoch)
     warmup_scheduler = GluonLRScheduler(optimizer, mode='linear', niters=iter_warmup,
-                                        target_lr=[args.lr * args.lr_gamma_Efficientnet,
-                                                   args.lr * args.lr_gamma_BiFPN,
+                                        target_lr=[args.lr * args.lr_gamma_backbone,
+                                                   args.lr * args.lr_gamma_fpn,
                                                    args.lr])
     schdeduler.set_baselrs(warmup_scheduler.target_lr)
     return warmup_scheduler, schdeduler
-
 
 
 def iter_per_epoch_cal(args,dataset):

@@ -3,8 +3,8 @@ import cv2
 import numpy as np
 import math
 import copy
-from ops import batched_rnms, rnms
-from ops import polygon_iou
+#from ops import batched_rnms, rnms
+#from ops import polygon_iou
 
 FLIP_LEFT_RIGHT = 0
 FLIP_TOP_BOTTOM = 1
@@ -285,7 +285,7 @@ class BoxList(object):
             )
             transposed_boxes = BoxList(transposed_boxes, image_size=self.size, mode='xywha_d')
         elif self.mode == 'xywha':
-            xc, yc, w, h, a = self.bbox.split(1,dim=1)
+            xc, yc, w, h, a = self.bbox.split(1, dim=1)
             if method == FLIP_LEFT_RIGHT:
                 TO_REMOVE = 1
                 transposed_xc = image_width - xc - TO_REMOVE
@@ -493,7 +493,7 @@ class BoxList(object):
         if self.mode == "xyxyxyxy":
             # TODO here is a imprecise calculation, assuming the bbox is a rectangle
             xywha_bbox = self.convert('xywha')
-            area = xywha_bbox.bbox[:,2] * xywha_bbox.bbox[:,3]
+            area = xywha_bbox.bbox[:, 2] * xywha_bbox.bbox[:, 3]
 
         elif self.mode == "xywha":
             area = box[:, 2] * box[:, 3]
@@ -531,7 +531,10 @@ class BoxList(object):
         assert self.mode == 'xyxyxyxy'
         rbboxes = []
         indexs = []
-        bboxes = self.bbox.numpy()
+        if self.bbox.is_cuda:
+            bboxes = self.bbox.cpu().numpy()
+        else:
+            bboxes = self.bbox.numpy()
         for i, bbox in enumerate(bboxes):
             rbbox = cv2.minAreaRect(bbox.reshape((4,2)).astype(np.float32))
             x, y, w, h, a = rbbox[0][0], rbbox[0][1], rbbox[1][0], rbbox[1][1], rbbox[2]
@@ -602,8 +605,8 @@ class BoxList(object):
         a = self.bbox[:, 4]
         degree_a = a /math.pi*180
         bbox = self.bbox.new_zeros(self.bbox.shape)
-        bbox[:,4] = degree_a
-        bbox[:,:4] = self.bbox[:,:4]
+        bbox[:, 4] = degree_a
+        bbox[:, :4] = self.bbox[:,:4]
         degreea_bbox = BoxList(bbox,image_size=self.size,mode='xywha_d')
         degreea_bbox._copy_extra_fields(self)
         return degreea_bbox
@@ -753,7 +756,7 @@ def boxlist_ml_rnms(boxlist, nms_thresh, max_proposals=-1,
     scores = boxlist.get_field(score_field)
     labels = boxlist.get_field(label_field)
 
-    keep = batched_rnms(boxes, scores, labels.to(torch.float32), nms_thresh, class_agnostic=True)
+    keep = batched_rnms(boxes, scores, labels.to(torch.float32), nms_thresh, class_agnostic=False)
     if max_proposals > 0:
         keep = keep[: max_proposals]
     boxlist = boxlist[keep]
@@ -877,6 +880,8 @@ def cat_boxlist(bboxes):
     Arguments:
         bboxes (list[BoxList])
     """
+    bboxes = [bbox for bbox in bboxes if bbox != None]
+
     assert isinstance(bboxes, (list, tuple))
     assert all(isinstance(bbox, BoxList) for bbox in bboxes)
 
@@ -901,7 +906,9 @@ def cat_boxlist(bboxes):
 def test():
     box1 = torch.tensor([1, 2, 3, 4, 1,4, 3,2]).repeat(4,1).to(torch.float64)
     box2 = torch.tensor([1.5, 2, 1.5,5, 4,5, 4,2]).repeat(4,1).to(torch.float64)
-    box1 = BoxList(box1, image_size=(1024,1024),mode='xyxyxyxy')
-    box2 = BoxList(box2, image_size=(1024,1024),mode='xyxyxyxy')
+    box1 = torch.tensor([[10,8,2,3,-90]]).to(torch.float64)
+    box2 = torch.tensor([[9,7,2,3,-90]]).to(torch.float64)
+    box1 = BoxList(box1, image_size=(1024,1024),mode='xywha_d')
+    box2 = BoxList(box2, image_size=(1024,1024),mode='xywha_d')
     ious = boxlist_iou(box1, box2)
     print(ious)

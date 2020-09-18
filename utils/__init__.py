@@ -30,5 +30,6 @@ from .ema import EMA
 from .anchor_generator import AnchorGenerator
 from .coder import BoxCoder
 from .postprocess import ATSSPostProcessor,GflPostProcesser
-from .loss import GIoULoss,SigmoidFocalLoss,concat_box_prediction_layers,get_num_gpus,reduce_sum
+from .loss import GIoULoss,SigmoidFocalLoss,concat_box_prediction_layers,get_num_gpus,reduce_sum,SmoothL1loss_with_weight
 from .trainer import Trainer, Tester
+from .pycocotools_rotation import Rotation_COCOeval

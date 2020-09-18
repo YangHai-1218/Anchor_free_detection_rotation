@@ -38,7 +38,8 @@ class BoxCoder(object):
         gt_ctr_y = gt_boxes[:, 1]
         angle = gt_boxes[:, 4]
 
-        wx, wy, ww, wh = (10., 10., 5., 5.)
+        #wx, wy, ww, wh = (10., 10., 5., 5.)
+        wx, wy, ww, wh = (5., 5., 1., 1.)
         # Normalize
         targets_dx = wx * (gt_ctr_x - ex_ctr_x) / ex_widths
         targets_dy = wy * (gt_ctr_y - ex_ctr_y) / ex_heights
@@ -63,7 +64,8 @@ class BoxCoder(object):
         ctr_x = anchors[:, 0]
         ctr_y = anchors[:, 1]
 
-        wx, wy, ww, wh = (10., 10., 5., 5.)
+        #wx, wy, ww, wh = (10., 10., 5., 5.)
+        wx, wy, ww, wh = (5., 5., 1., 1.)
         dx = preds[:, 0::4] / wx
         dy = preds[:, 1::4] / wy
         dw = preds[:, 2::4] / ww
@@ -126,3 +128,14 @@ class PointCoder(BoxCoder):
 
 
 
+def test():
+    gt = torch.tensor([[10, 20, 3, 5, -30]]).to(torch.float32)
+    anchor = torch.tensor([[10, 20, 32, 32, -90]]).to(torch.float32)
+    coder = BoxCoder(regression_type='box',anchor_sizes=None,anchor_strides=None)
+    reg_targets = coder.encode(gt,anchor)
+    pred = coder.decode(reg_targets,anchor)
+    print(reg_targets)
+    print(pred)
+
+if __name__ == '__main__':
+    test()

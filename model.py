@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from Head import EfficientDetHead, ATSSLoss, ATSSHead
+from Head import EfficientDetHead, ATSSLoss, ATSSHead,ATSSLoss_IOU
 from FPN.FPN import FPN, FPNTopP6P7
 from utils import AnchorGenerator, BoxCoder, ATSSPostProcessor
 from backbone import EfficientnetWithBiFPN
@@ -19,8 +19,8 @@ class Scale(nn.Module):
 
 
 
-def make_anchor_generator_atss(anchor_sizes, anchor_strides):
-    aspect_ratios = [1.0]
+def make_anchor_generator_atss(anchor_sizes, anchor_strides, anchor_ratios):
+    aspect_ratios = anchor_ratios
     straddle_thresh = 0
     octave = 2.0
     scales_per_octave = 1
@@ -58,10 +58,16 @@ class ATSS(nn.Module):
             )
 
         box_coder = BoxCoder(config.regression_type, config.anchor_sizes, config.anchor_strides)
-        self.loss_evaluator = ATSSLoss(
-            config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold, 
-            config.positive_type, config.reg_loss_weight, config.top_k, box_coder
-            )
+        # self.loss_evaluator = ATSSLoss(
+        #     config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
+        #     config.positive_type, config.reg_loss_weight, config.cls_loss_weight,
+        #     config.top_k, box_coder
+        #     )
+        self.loss_evaluator = ATSSLoss_IOU(
+            config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
+            config.positive_type, config.reg_loss_weight, config.angle_loss_weight, config.cls_loss_weight,
+            config.top_k, box_coder,
+        )
         self.box_selector_test = ATSSPostProcessor(
             config.inference_th, config.pre_nms_top_n, 
             config.nms_threshold, config.detections_per_img, 
@@ -70,7 +76,7 @@ class ATSS(nn.Module):
             config.voting_threshold,
             )
         self.anchor_generator = make_anchor_generator_atss(
-            config.anchor_sizes, config.anchor_strides
+            config.anchor_sizes, config.anchor_strides, config.anchor_ratios
             )
 
     def forward(self, images, targets=None):
@@ -83,28 +89,28 @@ class ATSS(nn.Module):
         # print('fpn extracted')
         # for feature in features:
         #     print(feature.shape)
-        box_cls, box_regression, centerness, angle = self.head(features)
+        box_cls, box_regression, quality, angle = self.head(features)
         anchors = self.anchor_generator(images, features)
  
         if self.training:
-            return self._forward_train(box_cls, box_regression, centerness, angle, targets, anchors)
+            return self._forward_train(box_cls, box_regression, quality, angle, targets, anchors)
         else:
-            return self._forward_test(box_cls, box_regression, centerness, angle, anchors)
+            return self._forward_test(box_cls, box_regression, quality, angle, anchors)
 
-    def _forward_train(self, box_cls, box_regression, centerness, angle, targets, anchors):
-        loss_box_cls, loss_box_reg, loss_centerness, loss_angle = self.loss_evaluator(
-            box_cls, box_regression, centerness, angle, targets, anchors
+    def _forward_train(self, box_cls, box_regression, quality, angle, targets, anchors):
+        loss_box_cls, loss_box_reg, loss_quality, loss_angle = self.loss_evaluator(
+            box_cls, box_regression, quality, angle, targets, anchors
         )
         losses = {
             "loss_cls": loss_box_cls,
             "loss_reg": loss_box_reg,
-            "loss_centerness": loss_centerness,
-            "angle_loss": loss_angle,
+            "loss_quality": loss_quality,
+            "loss_angle": loss_angle,
         }
         return None, losses
 
-    def _forward_test(self, box_cls, box_regression, centerness, angle, anchors):
-        boxes = self.box_selector_test(box_cls, box_regression, centerness, angle, anchors)
+    def _forward_test(self, box_cls, box_regression, quality, angle, anchors):
+        boxes = self.box_selector_test(box_cls, box_regression, quality, angle, anchors)
         return boxes, {}
 
 
@@ -121,10 +127,14 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
                                      regression_type=config.regression_type,
                                      num_classes=config.n_class, with_centerness=True)
         box_coder = BoxCoder(config.regression_type, config.anchor_sizes, config.anchor_strides)
-        self.loss_evaluator = ATSSLoss(
-            config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
-            config.positive_type, config.reg_loss_weight, config.angle_loss_weight, config.top_k, box_coder
-        )
+        # self.loss_evaluator = ATSSLoss(
+        #     config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
+        #     config.positive_type, config.reg_loss_weight, config.angle_loss_weight, config.top_k, box_coder
+        # )
+        self.loss_evaluator = ATSSLoss_IOU(
+                config.gamma, config.alpha, config.fg_iou_threshold, config.bg_iou_threshold,
+                config.positive_type, config.reg_loss_weight, config.angle_loss_weight, config.top_k, box_coder
+            )
         self.box_selector_test = ATSSPostProcessor(
             config.inference_th, config.pre_nms_top_n,
             config.nms_threshold, config.detections_per_img,
@@ -133,7 +143,7 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
             config.voting_threshold,
         )
         self.anchor_generator = make_anchor_generator_atss(
-            config.anchor_sizes, config.anchor_strides
+            config.anchor_sizes, config.anchor_strides, config.anchor_ratios
         )
 
     def forward(self, images, targets=None,val_withloss=False):
@@ -141,35 +151,35 @@ class Efficientnet_Bifpn_ATSS(nn.Module):
 
         features = self.backbone(images.tensors)
 
-        box_cls, box_regression, centerness, angle = self.head(features)
+        box_cls, box_regression, quality, angle = self.head(features)
         anchors = self.anchor_generator(images, features)
 
         if self.training:
-            return self._forward_train(box_cls, box_regression, centerness, angle, targets, anchors)
+            return self._forward_train(box_cls, box_regression, quality, angle, targets, anchors)
         else:
             if val_withloss:
-                _, losses = self._forward_train(box_cls, box_regression, centerness, angle, targets, anchors)
+                _, losses = self._forward_train(box_cls, box_regression, quality, angle, targets, anchors)
 
-            boxes, _ = self._forward_test(box_cls, box_regression, centerness, angle, anchors)
+            boxes, _ = self._forward_test(box_cls, box_regression, quality, angle, anchors)
             if val_withloss:
                 return boxes, losses
             else:
                 return boxes, None
 
-    def _forward_train(self, box_cls, box_regression, centerness, angle, targets, anchors):
-        loss_box_cls, loss_box_reg, loss_centerness, loss_angle = self.loss_evaluator(
-            box_cls, box_regression, centerness, angle, targets, anchors
+    def _forward_train(self, box_cls, box_regression, quality, angle, targets, anchors):
+        loss_box_cls, loss_box_reg, loss_quality, loss_angle = self.loss_evaluator(
+            box_cls, box_regression, quality, angle, targets, anchors
         )
         losses = {
             "loss_cls": loss_box_cls,
             "loss_reg": loss_box_reg,
-            "loss_centerness": loss_centerness,
+            "loss_quality": loss_quality,
             "loss_angle": loss_angle,
         }
         return None, losses
 
-    def _forward_test(self, box_cls, box_regression, centerness, angle, anchors):
-        boxes = self.box_selector_test(box_cls, box_regression, centerness, angle, anchors)
+    def _forward_test(self, box_cls, box_regression, quality, angle, anchors):
+        boxes = self.box_selector_test(box_cls, box_regression, quality, angle, anchors)
         return boxes, {}
 
 

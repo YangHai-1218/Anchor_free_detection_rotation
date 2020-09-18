@@ -94,7 +94,7 @@ class DOTADataset(datasets.CocoDetection):
             root = os.path.join(path, f'{self.image_folder_name}{split}')
         return root, annot
 
-    def __getitem__(self, index,transform_enable=True):
+    def __getitem__(self, index, transform_enable=True):
 
         if isinstance(index, tuple) or isinstance(index, list):
             transform_enable = index[1]
@@ -129,32 +129,6 @@ class DOTADataset(datasets.CocoDetection):
         #target = BoxList(boxes, (width,height), mode='xyxyxyxy').convert('xywha')
         target = BoxList(boxes, (width,height), mode='xyxyxyxy')
 
-        while len(target) == 0:
-            index = random.randint(0, len(self))
-
-            img_id = self.ids[index]
-            ann_ids = coco.getAnnIds(imgIds=img_id)
-            annots = coco.loadAnns(ann_ids)
-
-            path = coco.loadImgs(img_id)[0]['file_name']
-
-            img = cv2.imread(os.path.join(self.root, path), cv2.IMREAD_UNCHANGED)
-            if img.ndim == 2:
-                # if single channel image, then convert to BGR
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            elif img.ndim == 3:
-                pass
-            else:
-                raise RuntimeError("{} channel image not supported".format(img.ndim))
-
-            height, width, _ = img.shape
-            annots = [o for o in annots if o['iscrowd'] == 0]
-            boxes = [o['bbox'] for o in annots]
-            boxes = torch.as_tensor(boxes).reshape(-1, 8)
-            # target = BoxList(boxes, (width,height), mode='xyxyxyxy').convert('xywha')
-            target = BoxList(boxes, (width, height), mode='xyxyxyxy')
-
-
         target = target.change_order_to_clockwise()
         target = target.convert('xywha_d')
 
@@ -174,7 +148,7 @@ class DOTADataset(datasets.CocoDetection):
         if self.transformer is not None and transform_enable:
             img, target = self.transformer(img, target)
 
-        return img, target, index
+        return img, target, index, path
 
     def get_image_meta(self, index):
         id = self.id2img[index]

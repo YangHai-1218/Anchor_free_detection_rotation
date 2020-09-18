@@ -20,7 +20,7 @@ from utils import (
     GluonLRScheduler,
     transform,
     iter_per_epoch_cal,
-    set_schduler_with_wormup
+    set_schduler_with_wormup,
 )
 import os, cv2
 from tensorboardX import SummaryWriter
@@ -139,7 +139,7 @@ if __name__ == '__main__':
             transform.RandomVerticalFlip(0.5),
             transform.RandomRotate(0.5, rotate_time=4),
             transform.Cutout(0.5),
-            transform.Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152], target_size=(768, 768)),
+            transform.Multi_Scale_with_Crop(scales=[768, 896, 1024, 1152, 1280, 1408], target_size=(768, 768)),
             transform.ToTensor(),
             transform.Normalize(args.pixel_mean, args.pixel_std),
         ]
@@ -148,27 +148,28 @@ if __name__ == '__main__':
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch,
-        sampler=data_sampler(train_set, shuffle=False, distributed=args.distributed),
+        sampler=data_sampler(train_set, shuffle=True, distributed=args.distributed),
         num_workers=args.num_workers,
         collate_fn=collate_fn(args),
     )
 
-    # valid_set = DIORdataset(args.path, 'val')
-    # valid_trans = transform.Compose(
-    #     [
-    #         transform.Resize_For_Efficientnet(compund_coef=args.backbone_coef),
-    #         transform.ToTensor(),
-    #         transform.Normalize(args.pixel_mean, args.pixel_std)
-    #     ]
-    # )
-    # valid_set.set_transform(valid_trans)
-    # valid_loader = DataLoader(
-    #     valid_set,
-    #     batch_size=args.batch,
-    #     sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
-    #     num_workers=args.num_workers,
-    #     collate_fn=collate_fn(args),
-    # )
+    valid_set = DOTADataset(path=args.path, split='val_loss', image_folder_name='min_split_',
+                           anno_folder_name='annotations_split_')
+    valid_trans = transform.Compose(
+        [
+            transform.Resize_For_Efficientnet(compund_coef=4),
+            transform.ToTensor(),
+            transform.Normalize(args.pixel_mean, args.pixel_std)
+        ]
+    )
+    valid_set.set_transform(valid_trans)
+    valid_loder = DataLoader(
+        valid_set,
+        batch_size=args.batch,
+        sampler=data_sampler(valid_set, shuffle=False, distributed=args.distributed),
+        num_workers=args.num_workers,
+        collate_fn=collate_fn(args),
+    )
 
 
     # if args.val_with_loss:
@@ -242,19 +243,39 @@ if __name__ == '__main__':
 
     if not args.head_only and args.finetune:
         # if not freeze the backbone, then finetune the backbone,
-        optimizer = optim.SGD(
-            model.backbone.backbone_net.parameters(),
-            lr=0,
-            momentum=0.9,
-            weight_decay=0.0001,
-            nesterov=True,
-        )
-        optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 0,
-                                   'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
-        optimizer.add_param_group({'params': list(model.head.parameters()), 'lr': 0,
-                                   'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
-        print(f'[INFO] efficientnet use the lr :{args.lr*args.lr_gamma_Efficientnet} to finetune,'
-              f' bifpn use the lr:{args.lr*args.lr_gamma_BiFPN} to finetune')
+        if args.backbone_type == 'Efficientdet':
+            optimizer = optim.SGD(
+                model.backbone.backbone_net.parameters(),
+                lr=0,
+                momentum=0.9,
+                weight_decay=0.0001,
+                nesterov=True,
+            )
+            optimizer.add_param_group({'params': list(model.backbone.bifpn.parameters()), 'lr': 0,
+                                       'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
+            optimizer.add_param_group({'params': list(model.head.parameters()), 'lr': 0,
+                                       'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
+        else:
+            optimizer = optim.SGD(
+                model.backbone.parameters(),
+                lr=0,
+                momentum=0.9,
+                weight_decay=0.0001,
+                nesterov=True,
+            )
+            optimizer.add_param_group({'params': list(model.fpn.parameters()), 'lr': 0,
+                                       'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
+            optimizer.add_param_group({'params': list(model.head.parameters()), 'lr': 0,
+                                       'momentum': 0.9, 'weight_decay': 0.0001, 'nesterov': True})
+
+        iter_per_epoch = iter_per_epoch_cal(args, train_set)
+        scheduler = GluonLRScheduler(optimizer, mode='cosine', nepochs=(args.epoch - args.warmup_epoch),
+                                     iters_per_epoch=iter_per_epoch)
+        warmup_scheduler, schdeduler = set_schduler_with_wormup(args, iter_per_epoch, optimizer, scheduler)
+
+        print(f'[INFO] backbone use the lr :{args.lr*args.lr_gamma_backbone} to finetune,'
+              f' fpn use the lr:{args.lr*args.lr_gamma_fpn} to finetune'
+              f' head use the lr:{args.lr} to fintune')
     else:
         optimizer = optim.SGD(
             model.parameters(),
@@ -263,6 +284,7 @@ if __name__ == '__main__':
             weight_decay=0.0001,
             nesterov=True,
         )
+
 
 
     if args.load_checkpoint:
@@ -278,10 +300,6 @@ if __name__ == '__main__':
     #     optimizer, milestones=args.lr_steps, gamma=args.lr_gamma,last_epoch=last_epoch
     # )
     #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,factor=args.lr_gamma, patience=3,verbose=True)
-    iter_per_epoch = iter_per_epoch_cal(args, train_set)
-    scheduler = GluonLRScheduler(optimizer, mode='cosine', nepochs=(args.epoch-args.warmup_epoch),
-                                 iters_per_epoch=iter_per_epoch)
-    warmup_scheduler, schdeduler = set_schduler_with_wormup(args, iter_per_epoch, optimizer, scheduler)
 
 
     ema = EMA(model,decay=0.999,enable=args.EMA)
@@ -295,7 +313,7 @@ if __name__ == '__main__':
         )
 
     trainer = Trainer(args, train_loader, device)
-    #valider = Tester(args,valid_loader,valid_set,device)
+    valider = Tester(args, valid_loder, valid_set, device)
 
     print(f'[INFO] Start training: learning rate:{args.lr}, total batchsize:{args.batch*get_world_size()}, '
           f'working dir:{args.working_dir}')
@@ -305,8 +323,8 @@ if __name__ == '__main__':
                                f'finetune_backbone:{args.finetune}')
 
     if args.finetune:
-        logger.add_text('exp_info',f'efficientnet lr gamma:{args.lr_gamma_Efficientnet},'
-                                   f'BiFPN lr gamma:{args.lr_gamma_BiFPN}')
+        logger.add_text('exp_info',f'efficientnet lr gamma:{args.lr_gamma_backbone},'
+                                   f'BiFPN lr gamma:{args.lr_gamma_fpn}')
 
     val_best_loss = 1e5
     val_best_epoch = 0
@@ -315,10 +333,10 @@ if __name__ == '__main__':
         epoch += (last_epoch + 1)
 
         epoch_loss = trainer.train(model, epoch, optimizer, [scheduler, warmup_scheduler], logger, ema)
+        if epoch % args.save_interval == 0 or epoch == args.epoch-1:
+            valider(model, epoch, logger, ema)
+            save_checkpoint(model, args, optimizer, epoch)
 
-        save_checkpoint(model, args, optimizer, epoch)
-
-        #valider(model,epoch,logger,ema)
 
         # if args.val_with_loss and epoch > 1 and epoch % 2 ==0:
         #     val_epoch_loss = valid_loss(args,epoch,val_loss_loader,valid_loss_set,model,device,logger=logger)

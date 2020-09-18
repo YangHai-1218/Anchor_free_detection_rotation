@@ -58,7 +58,7 @@ class ATSSHead(nn.Module):
             in_channels, num_anchors * 4, kernel_size=3, stride=1,
             padding=1
         )
-        self.centerness = nn.Conv2d(
+        self.quality = nn.Conv2d(
             in_channels, num_anchors * 1, kernel_size=3, stride=1,
             padding=1
         )
@@ -71,7 +71,7 @@ class ATSSHead(nn.Module):
         # initialization
         for modules in [self.cls_tower, self.bbox_tower,
                         self.cls_logits, self.bbox_pred,
-                        self.centerness]:
+                        self.quality]:
             for l in modules.modules():
                 if isinstance(l, nn.Conv2d):
                     torch.nn.init.normal_(l.weight, std=0.01)
@@ -90,7 +90,7 @@ class ATSSHead(nn.Module):
     def forward(self, x):
         logits = []
         bbox_reg = []
-        centerness = []
+        quality = []
         angle = []
         for l, feature in enumerate(x):
             cls_tower = self.cls_tower(feature)
@@ -104,8 +104,8 @@ class ATSSHead(nn.Module):
             bbox_reg.append(bbox_pred)
 
             angle.append(self.angle(box_tower))
-            centerness.append(self.centerness(box_tower))
-        return logits, bbox_reg, centerness, angle
+            quality.append(self.quality(box_tower))
+        return logits, bbox_reg, quality, angle
 
 
 class Scale(nn.Module):
@@ -120,14 +120,16 @@ class Scale(nn.Module):
 
 class ATSSLoss(object):
     def __init__(self, gamma, alpha, fg_iou_threshold, bg_iou_threshold, positive_type,
-                 reg_loss_weight, angle_loss_weight,
+                 reg_loss_weight, angle_loss_weight, cls_loss_weight,
                  top_k, box_coder):
         self.cls_loss_func = SigmoidFocalLoss(gamma, alpha)
         self.centerness_loss_func = nn.BCEWithLogitsLoss(reduction="sum")
         self.angle_loss_func = nn.CrossEntropyLoss(reduction='sum')
-        self.reg_loss_func = GIoULoss(box_coder)
+        #self.reg_loss_func = GIoULoss(box_coder)
+        self.reg_loss_func = nn.SmoothL1Loss(reduction='none')
         self.reg_loss_weight = reg_loss_weight
         self.angle_loss_weight = angle_loss_weight
+        self.cls_loss_weight = cls_loss_weight
         self.box_coder = box_coder
         self.assigner = Assigner(positive_type,box_coder,fg_iou_threshold,bg_iou_threshold,top_k)
 
@@ -147,8 +149,9 @@ class ATSSLoss(object):
         b = gts_bottom_y - anchors_cy
         left_right = torch.stack([l, r], dim=1)
         top_bottom = torch.stack([t, b], dim=1)
-        centerness = torch.sqrt((left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0]) * \
-                      (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0]))
+        centerness = torch.sqrt(torch.abs((left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0])) * \
+                      torch.abs((top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0])))
+
         assert not torch.isnan(centerness).any()
         return centerness
 
@@ -209,9 +212,12 @@ class ATSSLoss(object):
             sum_centerness_targets_avg_per_gpu = reduce_sum(centerness_targets.sum()).item() / float(num_gpus)
 
             # attention here
-            reg_loss = self.reg_loss_func(box_regression_flatten, reg_targets_flatten, anchors_flatten,
-                                     weight=centerness_targets*weights_label_flatten) \
-                       /sum_centerness_targets_avg_per_gpu
+            reg_loss = self.reg_loss_func(box_regression_flatten, reg_targets_flatten)
+            reg_loss = reg_loss.sum(dim=-1) * centerness_targets*weights_label_flatten
+            reg_loss = reg_loss.sum() / sum_centerness_targets_avg_per_gpu
+            # reg_loss = self.reg_loss_func(box_regression_flatten, reg_targets_flatten, anchors_flatten,
+            #                          weight=centerness_targets*weights_label_flatten) \
+            #            /sum_centerness_targets_avg_per_gpu
 
             centerness_loss = self.centerness_loss_func(centerness_flatten, centerness_targets) / num_pos_avg_per_gpu
 
@@ -222,7 +228,7 @@ class ATSSLoss(object):
             centerness_loss = reg_loss * 0
             angle_loss = reg_loss * 0
 
-        return cls_loss, reg_loss * self.reg_loss_weight, centerness_loss, angle_loss * self.angle_loss_weight
+        return cls_loss * self.cls_loss_weight, reg_loss * self.reg_loss_weight, centerness_loss, angle_loss * self.angle_loss_weight
 
 
 

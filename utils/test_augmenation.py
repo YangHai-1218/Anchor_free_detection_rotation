@@ -6,7 +6,7 @@ from utils import BoxList,boxlist_ml_rnms,cat_boxlist,ImageList
 from collections import defaultdict
 import os
 import cv2
-from utils.transform import ToTensor,RandomHorizontalFlip
+from utils.transform import ToTensor,RandomHorizontalFlip,Resize_letterbox_square
 from evaluate import map_to_origin_image
 from .dataset import ImageList
 '''
@@ -75,7 +75,7 @@ class Ensemble:
             boxlist.add_field('scores',torch.tensor(images_bbox[image_id]['scores']))
             boxlist.add_field('labels',torch.tensor(images_bbox[image_id]['labels']))
             # nms
-            boxlist = boxlist_ml_nms(boxlist,nms_threshold)
+            boxlist = boxlist_ml_rnms(boxlist,nms_threshold)
 
             boxlist = boxlist.convert('xywh')
             boxes = boxlist.bbox.tolist()
@@ -197,7 +197,8 @@ class Multi_Scale_Test:
                  device,
                  flip_enable=False,
                  bbox_aug_vote=False,
-                 bbox_voting_threshold=0,):
+                 bbox_voting_threshold=0,
+                 normalize=None):
         """
         dataset : dataset object
         scale : list[tuple] , (width,height), inference on every fixed scale
@@ -222,10 +223,15 @@ class Multi_Scale_Test:
         self.bbox_aug_vote = bbox_aug_vote
         self.bbox_voting_threshold = bbox_voting_threshold
         self.device = device
+        self.normalize = normalize
 
 
     def weight_score(self, weight, preds):
+        preds_new = []
         for pred in preds:
+            if pred is None:
+                preds_new.append(None)
+                continue
             scores = pred.get_field("scores")
             area = pred.area()
 
@@ -237,7 +243,8 @@ class Multi_Scale_Test:
             large_object_inedx = area >= self.large_object_threshold
             scores[large_object_inedx] *= weight[2]
             pred.add_field("scores", scores)
-        return preds
+            preds_new.append(pred)
+        return preds_new
 
     def __call__(self, model, images, indexs):
         # TODO VOTING
@@ -248,17 +255,22 @@ class Multi_Scale_Test:
 
 
         for i, scale in enumerate(self.scales):
+            assert scale[0] == scale[1], "only support square letterbox resize"
             for index in indexs:
                 image_meta = self.dataset.get_image_meta(index)
                 image_path = image_meta['file_name']
                 image_path = os.path.join(self.dataset.root, image_path)
                 image_origin = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-                image_resized = cv2.resize(image_origin, scale, interpolation=cv2.INTER_LINEAR)
+
+
+                image_resized, _ = Resize_letterbox_square(size=scale[0])(image_origin, None)
                 image_resized_tensor, _ = ToTensor()(image_resized, None)
+                image_resized_tensor, _ = self.normalize(image_resized_tensor, None)
                 images_resized[i].append(image_resized_tensor)
 
                 image_resized_flipped, _ = RandomHorizontalFlip(p=1)(image_resized, None)
                 image_resized_fliped_tensor, _ = ToTensor()(image_resized_flipped, None)
+                image_resized_fliped_tensor, _ = self.normalize(image_resized_fliped_tensor, None)
                 images_resized_flipped[i].append(image_resized_fliped_tensor)
 
 
@@ -268,33 +280,37 @@ class Multi_Scale_Test:
             for img, batch_img in zip(images_resized[i], resized_batch):
                 batch_img.copy_(img)
 
+            sizes = [img.shape[-2:] for img in resized_batch]
             images_resized[i] = ImageList(resized_batch,
-                                          sizes=images_resized[i][0].shape[-2:])
+                                          sizes=sizes)
 
             resized_flipped_batch = images_resized_flipped[i][0].new_zeros((len(indexs),)+images_resized_flipped[i][0].shape)
             for img, batch_img in zip(images_resized_flipped[i], resized_flipped_batch):
                 batch_img.copy_(img)
+
+            sizes = [img.shape[-2:] for img in resized_batch]
             images_resized_flipped[i] = ImageList(resized_flipped_batch,
-                                                  sizes=images_resized_flipped[i][0].shape[-2:])
+                                                  sizes=sizes)
 
         boxlists = []
         for i in range(len(self.scales)):
-            resized_preds = model(images_resized[i].to(self.device))
+            resized_preds, _ = model(images_resized[i].to(self.device))
             resized_preds = self.weight_score(self.weights[i], resized_preds)
 
-            resized_flipped_preds = model(images_resized_flipped[i].to(self.device))
+            resized_flipped_preds, _ = model(images_resized_flipped[i].to(self.device))
             resized_flipped_preds = self.weight_score(self.weights[i], resized_flipped_preds)
-            resized_flipped_preds = [pred.transpose(0) for pred in resized_flipped_preds]
+            resized_flipped_preds = [pred.transpose(0) if (pred is not None) else None for pred in resized_flipped_preds]
 
             preds = list(zip(*[resized_preds, resized_flipped_preds]))
             preds = [cat_boxlist(pred) for pred in preds]
             nms_preds = [boxlist_ml_rnms(pred, self.nms_threshold) for pred in preds]
+            nms_preds = [nms_pred.convert('xyxyxyxy') for nms_pred in nms_preds]
             maped_preds = [map_to_origin_image(
                 self.dataset.get_image_meta(indexs[i]), pred) for i, pred in enumerate(nms_preds)]
 
             boxlists.append(maped_preds)
         total_boxlists = list(zip(*boxlists))
-
+        total_boxlists = [cat_boxlist(boxlist) for boxlist in total_boxlists]
 
         results = []
         for boxlist in total_boxlists:
