@@ -24,7 +24,7 @@ ToDo
 - [ ] Gradient Centralizatio
 
 
-This repo will nolonger be matained, suggest to use mmdetection[https://github.com/open-mmlab/mmdetection]
+This repo will nolonger be maintained, suggest to use [mmdetection](https://github.com/open-mmlab/mmdetection)
 
  
 
