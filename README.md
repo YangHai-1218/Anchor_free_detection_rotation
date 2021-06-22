@@ -23,5 +23,8 @@ ToDo
 - [ ] Zoom
 - [ ] Gradient Centralizatio
 
+
+This repo will nolonger be matained, suggest to use mmdetection[https://github.com/open-mmlab/mmdetection]
+
  
 
